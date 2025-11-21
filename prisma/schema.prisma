@@ -1,0 +1,147 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  MANAGER
+}
+
+enum CallStatus {
+  NEW
+  PROCESSING
+  DONE
+  ERROR
+}
+
+enum IntegrationType {
+  AMOCRM
+  BITRIX24
+  WEBHOOK
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELED
+}
+
+model Company {
+  id               String   @id @default(cuid())
+  stripeCustomerId String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  name  String
+  phone String?
+
+  users         User[]
+  managers      Manager[]
+  calls         Call[]
+  subscriptions Subscription[]
+  integrations  Integration[]
+
+  @@index([name])
+}
+
+model User {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  email        String  @unique
+  passwordHash String
+  name         String?
+  role         Role    @default(MANAGER)
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+model Manager {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  name  String
+  email String?
+  phone String?
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  calls Call[]
+
+  @@index([companyId])
+}
+
+model Call {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  managerId String?
+  manager   Manager? @relation(fields: [managerId], references: [id])
+
+  externalId String?
+  audioUrl   String?
+  duration   Int?
+
+  status     CallStatus @default(NEW)
+  transcript String?
+  score      Int?
+  sentiment  String?
+  meta       Json?
+
+  @@unique([companyId, externalId])
+  @@index([companyId])
+  @@index([managerId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([externalId])
+}
+
+model Integration {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  type    IntegrationType
+  enabled Boolean         @default(true)
+  config  Json?
+
+  @@unique([companyId, type], name: "companyId_type")
+}
+
+model Subscription {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  plan             String
+  seats            Int                @default(1)
+  pricePerMonthKZT Int                @default(0)
+  status           SubscriptionStatus @default(ACTIVE)
+
+  @@index([companyId, status])
+}
+
+model AmoTrialUsage {
+  amoDomain       String   @id
+  usedByCompanyId String
+  createdAt       DateTime @default(now())
+}

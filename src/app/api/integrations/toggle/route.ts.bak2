@@ -1,0 +1,115 @@
+﻿const body = await req.json();
+  const rawConfig = (body && body.config) ? body.config : {};
+  const config: any = JSON.parse(JSON.stringify(rawConfig || {}));
+import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@/lib/auth";
+import { db } from "@/lib/db";
+import { IntegrationType } from "@prisma/client";
+
+// РџРѕР»СѓС‡РёС‚СЊ СЃРїРёСЃРѕРє РёРЅС‚РµРіСЂР°С†РёР№ С‚РµРєСѓС‰РµР№ РєРѕРјРїР°РЅРёРё
+export async function GET() {
+  const session = await auth();
+  const sessionUser = session?.user as
+    | { id?: string; email?: string | null; companyId?: string | null }
+    | undefined;
+
+  if (!sessionUser?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // РіР°СЂР°РЅС‚РёСЂСѓРµРј РЅР°Р»РёС‡РёРµ companyId
+  const companyId = await ensureCompanyForUser(sessionUser);
+
+  const integrations = await db.integration.findMany({
+    where: { companyId },
+  });
+
+  return NextResponse.json({ integrations });
+}
+
+// РЎРѕР·РґР°С‚СЊ/РѕР±РЅРѕРІРёС‚СЊ РёРЅС‚РµРіСЂР°С†РёСЋ
+export async function POST(req: NextRequest) {
+  try {
+    const session = await auth();
+    const sessionUser = session?.user as
+      | { id?: string; email?: string | null; companyId?: string | null }
+      | undefined;
+
+    if (!sessionUser?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const\ body\ =\ await\ req\.json\(\);\n\ \ const\ rawConfig\ =\ \(body\ &&\ body\.config\)\ \?\ body\.config\ :\ \{};\n\ \ const\ config:\ any\ =\ JSON\.parse\(JSON\.stringify\(rawConfig\ \|\|\ \{}\)\);
+    const type = body.type as IntegrationType | undefined;
+    const enabled = Boolean(body.enabled);
+
+    if (!type) {
+      return NextResponse.json({ error: "Missing type" }, { status: 400 });
+    }
+
+    const companyId = await ensureCompanyForUser(sessionUser);
+
+    const existing = await db.integration.findFirst({
+      where: { companyId, type },
+    });
+
+    const integration = existing
+      ? await db.integration.update({
+          where: { id: existing.id },
+          data: { enabled, config },
+        })
+      : await db.integration.create({
+          data: { companyId, type, enabled, config },
+        });
+
+    return NextResponse.json({ success: true, integration });
+  } catch (error) {
+    console.error("POST /api/integrations error:", error);
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
+  }
+}
+
+// ---------- helpers ----------
+
+// Р•СЃР»Рё Сѓ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ РЅРµС‚ companyId вЂ” СЃРѕР·РґР°С‘Рј РєРѕРјРїР°РЅРёСЋ Рё РїСЂРёРІСЏР·С‹РІР°РµРј.
+async function ensureCompanyForUser(user: {
+  id?: string;
+  email?: string | null;
+  companyId?: string | null;
+}): Promise<string> {
+  if (user.companyId) return user.companyId;
+
+  if (!user.id) {
+    throw new Error("User id missing in session");
+  }
+
+  const existingUser = await db.user.findUnique({
+    where: { id: user.id },
+    select: { companyId: true },
+  });
+
+  if (existingUser?.companyId) {
+    return existingUser.companyId;
+  }
+
+  const companyName =
+    user.email?.split("@")[0] || "CallXAI Company";
+
+  const company = await db.company.create({
+    data: { name: companyName },
+  });
+
+  await db.user.update({
+    where: { id: user.id },
+    data: { companyId: company.id },
+  });
+
+  return company.id;
+}
+
+
+
+
+
+
+
