@@ -1,9 +1,14 @@
 ﻿import OpenAI from "openai";
 
-if (!process.env.OPENAI_API_KEY) {
-  throw new Error("OPENAI_API_KEY is not set");
-}
+/**
+ * ВАЖНО:
+ * - Локально использует реальный OPENAI_API_KEY из .env
+ * - На Vercel, если переменная не задана, подставляет заглушку,
+ *   чтобы сборка не падала. Запросы с этим ключом просто будут 401.
+ */
+
+const apiKey = process.env.OPENAI_API_KEY || "DUMMY_KEY_FOR_BUILD";
 
 export const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey,
 });
