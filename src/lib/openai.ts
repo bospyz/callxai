@@ -2,22 +2,15 @@
 
 let client: OpenAI | null = null;
 
-export function getOpenAIClient() {
-  const apiKey = process.env.OPENAI_API_KEY || "DUMMY_KEY_FOR_BUILD_ONLY";
-
-  if (!apiKey) {
-    throw new Error("OPENAI_API_KEY is not set");
-  }
-
+/**
+ * Safe OpenAI client.
+ * - Не бросает ошибку при импорте
+ * - Для билдов без ключа использует dummy-ключ
+ */
+export function getOpenAIClient(): OpenAI {
   if (!client) {
-    client = new OpenAI({
-      apiKey,
-    });
+    const apiKey = process.env.OPENAI_API_KEY || "dummy-openai-key";
+    client = new OpenAI({ apiKey });
   }
-
   return client;
 }
-
-// Для старого кода, если где-то ещё используется:
-export const openai = getOpenAIClient();
-export default openai;

@@ -1,5 +1,7 @@
 ﻿import { db } from "./db";
-import { openai } from "./openai";
+import { getOpenAIClient } from "./openai";
+
+const openai = getOpenAIClient();
 import { CallStatus } from "@prisma/client";
 
 const ALLOWED_AUDIO_HOSTS = [

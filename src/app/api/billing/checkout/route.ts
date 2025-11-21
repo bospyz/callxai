@@ -5,7 +5,7 @@ import {
   type BillingPlan,
 } from "@/lib/billing/BillingService";
 
-const ALLOWED_PLANS: BillingPlan[] = ["start", "pro", "team"];
+const ALLOWED_PLANS: BillingPlan[] = ["pro", "team"];
 
 export async function POST(req: NextRequest) {
   const session = await auth();
@@ -28,9 +28,10 @@ export async function POST(req: NextRequest) {
 
   const plan = body?.plan as BillingPlan | undefined;
   if (!plan || !ALLOWED_PLANS.includes(plan)) {
-    return new NextResponse('Field "plan" must be one of: start, pro, team', {
-      status: 400,
-    });
+    return new NextResponse(
+      'Field "plan" must be one of: ' + ALLOWED_PLANS.join(", "),
+      { status: 400 },
+    );
   }
 
   const origin =
@@ -58,7 +59,7 @@ export async function POST(req: NextRequest) {
     console.error("[API] /api/billing/checkout error", err);
     return new NextResponse(
       err?.message ? `Checkout error: ${err.message}` : "Checkout error",
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

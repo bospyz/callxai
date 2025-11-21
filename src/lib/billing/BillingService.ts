@@ -1,37 +1,30 @@
-﻿import Stripe from "stripe";
+﻿import { getStripe } from "@/lib/stripe";
 import { db } from "../db";
-
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? "", {});
 
 /**
  * Поддерживаемые тарифы.
  */
-export type BillingPlan = "start" | "pro" | "team";
+export type BillingPlan = "pro" | "team";
 
 function getPriceIdForPlan(plan: BillingPlan): string {
-  const priceStart = process.env.STRIPE_PRICE_START;
   const pricePro = process.env.STRIPE_PRICE_PRO;
   const priceTeam = process.env.STRIPE_PRICE_TEAM;
 
-  switch (plan) {
-    case "start":
-      if (!priceStart) {
-        throw new Error("STRIPE_PRICE_START is not set in environment");
-      }
-      return priceStart;
-    case "pro":
-      if (!pricePro) {
-        throw new Error("STRIPE_PRICE_PRO is not set in environment");
-      }
-      return pricePro;
-    case "team":
-      if (!priceTeam) {
-        throw new Error("STRIPE_PRICE_TEAM is not set in environment");
-      }
-      return priceTeam;
-    default:
-      throw new Error(`Unsupported plan: ${plan}`);
+  if (plan === "pro") {
+    if (!pricePro) {
+      throw new Error("STRIPE_PRICE_PRO is not set in environment");
+    }
+    return pricePro;
   }
+
+  if (plan === "team") {
+    if (!priceTeam) {
+      throw new Error("STRIPE_PRICE_TEAM is not set in environment");
+    }
+    return priceTeam;
+  }
+
+  throw new Error(`Unsupported plan: ${plan}`);
 }
 
 /**
@@ -46,12 +39,14 @@ async function ensureStripeCustomer(companyId: string) {
     throw new Error("Company not found");
   }
 
-  if ((company as any).stripeCustomerId) {
-    return (company as any).stripeCustomerId as string;
+  if (company.stripeCustomerId) {
+    return company.stripeCustomerId;
   }
 
+  const stripe = getStripe();
+
   const customer = await stripe.customers.create({
-    name: (company as any).name ?? undefined,
+    name: company.name ?? undefined,
   });
 
   await db.company.update({
@@ -75,6 +70,7 @@ export async function createSubscriptionCheckout(opts: {
 }) {
   const { companyId, plan, successUrl, cancelUrl } = opts;
 
+  const stripe = getStripe();
   const customerId = await ensureStripeCustomer(companyId);
   const priceId = getPriceIdForPlan(plan);
 

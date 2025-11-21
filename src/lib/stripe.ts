@@ -1,9 +1,22 @@
 ﻿import Stripe from "stripe";
 
-if (!process.env.STRIPE_SECRET_KEY) {
-  throw new Error("STRIPE_SECRET_KEY is not set");
-}
+let stripeClient: Stripe | null = null;
 
-export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: "2024-06-20" as any,
-});
+/**
+ * Ленивая инициализация Stripe.
+ * Не ломает билд, если нет STRIPE_SECRET_KEY  ошибка будет только при реальном вызове.
+ */
+export function getStripe(): Stripe {
+  const key = process.env.STRIPE_SECRET_KEY;
+
+  if (!key) {
+    throw new Error("Stripe is not configured (STRIPE_SECRET_KEY is missing)");
+  }
+
+  if (!stripeClient) {
+    // Используем дефолтную версию из настроек Stripe-аккаунта
+    stripeClient = new Stripe(key, {} as Stripe.StripeConfig);
+  }
+
+  return stripeClient;
+}
