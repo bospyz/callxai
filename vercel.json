@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/sync-calls?companyId=cmiaegnvc0000jm049lqz9flr&secret=supercron123",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/cleanup-calls?secret=supercron123",
+      "schedule": "0 3 * * *"
+    }
+  ]
+}
