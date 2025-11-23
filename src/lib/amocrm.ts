@@ -1,4 +1,6 @@
-﻿import { db } from "@/lib/db";
+﻿// src/lib/amocrm.ts
+
+import { db } from "@/lib/db";
 import {
   CallStatus,
   IntegrationType,
@@ -75,7 +77,7 @@ async function amoFetch(
   });
 
   if (res.status === 401) {
-    // TODO: здесь можно реализовать refreshToken-логику
+    // TODO: refreshToken-логика
     throw new Error("amoCRM access token expired or invalid");
   }
 
@@ -91,20 +93,20 @@ async function amoFetch(
   }
 }
 
+type AmoCallItem = {
+  externalId: string;
+  audioUrl: string | null;
+  duration: number | null;
+  managerName: string | null;
+  phone: string | null;
+  raw: any;
+};
+
 async function fetchRecentCallsFromAmo(
   config: AmoIntegrationConfig,
   limit: number
-): Promise<
-  {
-    externalId: string;
-    audioUrl: string | null;
-    duration: number | null;
-    managerName: string | null;
-    phone: string | null;
-    raw: any;
-  }[]
-> {
-  // Упрощённый пример: тянем notes типа звонков
+): Promise<AmoCallItem[]> {
+  // Упрощённый пример: тянем notes типа "звонок"
   const result = await amoFetch(
     config,
     `/api/v4/leads/notes?note_type=10&limit=${limit}`
@@ -114,7 +116,7 @@ async function fetchRecentCallsFromAmo(
     return [];
   }
 
-  return result._embedded.notes.map((note: any) => {
+  return result._embedded.notes.map((note: any): AmoCallItem => {
     const externalId = String(note.id);
     const audioUrl =
       note.params?.file || note.params?.link || note.params?.url || null;
@@ -135,6 +137,9 @@ async function fetchRecentCallsFromAmo(
   });
 }
 
+/**
+ * Основная функция синка последних звонков из amoCRM в таблицу Call.
+ */
 export async function syncAmoRecentCalls(opts: {
   companyId: string;
   limit?: number;
@@ -186,6 +191,7 @@ export async function syncAmoRecentCalls(opts: {
     created += 1;
   }
 
+  // Обновляем lastSyncAt
   try {
     const newConfig: AmoIntegrationConfig = {
       ...config,
