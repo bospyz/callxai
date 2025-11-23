@@ -1,7 +1,7 @@
 {
   "crons": [
     {
-      "path": "/api/cron/sync-calls?companyId=cmiaegnvc0000jm049lqz9flr&secret=supercron123",
+      "path": "/api/cron/sync-company-calls?companyId=cmiaegnvc0000jm049lqz9flr&secret=supercron123",
       "schedule": "*/15 * * * *"
     },
     {
