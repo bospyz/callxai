@@ -3,10 +3,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
 /**
- * ВРЕМЕННЫЙ stub для CRON-синхронизации звонков.
- * Сейчас просто проверяет secret и companyId и отвечает ok,
- * чтобы убедиться, что маршрут и крон работают.
- * Позже сюда добавим реальную syncAmoRecentCalls.
+ * Временный stub для CRON-синхронизации звонков.
+ * Проверяем secret и companyId, чтобы убедиться,
+ * что маршрут и крон работают.
  */
 
 async function handleSync(req: NextRequest) {
@@ -22,11 +21,6 @@ async function handleSync(req: NextRequest) {
     return new NextResponse("Missing companyId", { status: 400 });
   }
 
-  // TODO: здесь позже будет реальная логика:
-  // 1) взять интеграцию amo для companyId
-  // 2) забрать новые звонки
-  // 3) создать Call со status = NEW
-  // Сейчас просто возвращаем заглушку.
   return NextResponse.json({
     ok: true,
     message: "Cron sync stub OK",
