@@ -19,29 +19,13 @@ const systemItems = [
   { href: "/app/settings", label: "Настройки" },
 ];
 
-type SidebarStats = {
-  callsInWork: number;
-  planPercent: number;
-};
-
-function SidebarContent({
-  pathname,
-  stats,
-  statsLoading,
-}: {
-  pathname: string | null;
-  stats: SidebarStats | null;
-  statsLoading: boolean;
-}) {
+function SidebarInner({ pathname }: { pathname: string | null }) {
   function isActive(href: string) {
     return pathname === href || pathname?.startsWith(href + "/");
   }
 
-  const percent = stats?.planPercent ?? 0;
-  const safePercent = Math.min(100, Math.max(0, percent));
-
   return (
-    <div className="relative z-10 flex flex-col h-full px-5 py-6">
+    <>
       {/* Градиентные переливы */}
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute -right-20 top-16 h-52 w-52 rounded-full bg-[radial-gradient(circle,_rgba(74,222,128,0.18),_transparent)] blur-2xl" />
@@ -49,7 +33,7 @@ function SidebarContent({
         <div className="absolute inset-0 opacity-[0.04] [background-image:radial-gradient(circle_at_1px_1px,#ffffff20_1px,transparent_0)] [background-size:14px_14px]" />
       </div>
 
-      <div className="relative z-10 flex flex-col h-full">
+      <div className="relative z-10 flex flex-col h-full px-5 py-6">
         {/* ЛОГО + workspace */}
         <Link
           href="/"
@@ -70,42 +54,6 @@ function SidebarContent({
             </div>
           </div>
         </Link>
-
-        {/* Мини-сводка по звонкам (данные с бэка) */}
-        <div className="mb-5 rounded-2xl border border-neutral-800/90 bg-black/50 px-3 py-3 shadow-[0_10px_35px_rgba(0,0,0,0.8)]">
-          <div className="flex items-center justify-between mb-1.5">
-            <span className="text-[11px] text-neutral-500 uppercase tracking-wide">
-              Сегодня
-            </span>
-            <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-400/30 text-emerald-300">
-              автоанализ
-            </span>
-          </div>
-
-          <div className="flex items-center justify-between text-[13px] text-neutral-200">
-            <span>Звонков в работе</span>
-            {statsLoading ? (
-              <span className="h-3 w-8 rounded-full bg-neutral-800 animate-pulse" />
-            ) : (
-              <span className="font-semibold text-emerald-300">
-                {stats ? stats.callsInWork : "—"}
-              </span>
-            )}
-          </div>
-
-          <div className="mt-2 h-1.5 rounded-full bg-neutral-900 overflow-hidden">
-            <div
-              className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-lime-300 transition-all duration-500"
-              style={{ width: `${statsLoading ? 0 : safePercent}%` }}
-            />
-          </div>
-
-          <p className="mt-1.5 text-[10px] text-neutral-500">
-            {statsLoading
-              ? "Обновляем статистику..."
-              : `${safePercent}% от дневного плана проверено CallX.`}
-          </p>
-        </div>
 
         {/* ОСНОВНАЯ НАВИГАЦИЯ */}
         <nav className="flex flex-col gap-1 text-[13px] text-neutral-400 mb-4">
@@ -211,32 +159,13 @@ function SidebarContent({
           </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }
 
 export default function AppSidebar() {
   const pathname = usePathname();
   const [isMobileOpen, setIsMobileOpen] = useState(false);
-  const [stats, setStats] = useState<SidebarStats | null>(null);
-  const [statsLoading, setStatsLoading] = useState(true);
-
-  useEffect(() => {
-    async function loadStats() {
-      try {
-        const res = await fetch("/api/sidebar/stats");
-        if (!res.ok) throw new Error("Failed to load stats");
-        const data: SidebarStats = await res.json();
-        setStats(data);
-      } catch (error) {
-        console.error("Failed to load sidebar stats", error);
-      } finally {
-        setStatsLoading(false);
-      }
-    }
-
-    loadStats();
-  }, []);
 
   // закрываем бургер при смене роутов
   useEffect(() => {
@@ -279,11 +208,7 @@ export default function AppSidebar() {
           overflow-hidden
         "
       >
-        <SidebarContent
-          pathname={pathname}
-          stats={stats}
-          statsLoading={statsLoading}
-        />
+        <SidebarInner pathname={pathname} />
       </aside>
 
       {/* Мобильный выезжающий сайдбар */}
@@ -307,11 +232,7 @@ export default function AppSidebar() {
               shadow-[0_0_40px_rgba(0,0,0,0.9)]
             "
           >
-            <SidebarContent
-              pathname={pathname}
-              stats={stats}
-              statsLoading={statsLoading}
-            />
+            <SidebarInner pathname={pathname} />
           </aside>
         </div>
       )}
