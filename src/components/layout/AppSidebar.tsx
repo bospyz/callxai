@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
+import { useEffect, useState } from "react";
 
 const mainItems = [
   { href: "/app", label: "Дэшборд" },
@@ -18,28 +19,29 @@ const systemItems = [
   { href: "/app/settings", label: "Настройки" },
 ];
 
-export default function AppSidebar() {
-  const pathname = usePathname();
+type SidebarStats = {
+  callsInWork: number;
+  planPercent: number;
+};
 
+function SidebarContent({
+  pathname,
+  stats,
+  statsLoading,
+}: {
+  pathname: string | null;
+  stats: SidebarStats | null;
+  statsLoading: boolean;
+}) {
   function isActive(href: string) {
     return pathname === href || pathname?.startsWith(href + "/");
   }
 
+  const percent = stats?.planPercent ?? 0;
+  const safePercent = Math.min(100, Math.max(0, percent));
+
   return (
-    <aside
-      className="
-      w-60 h-screen 
-      sticky top-0
-      border-r border-neutral-900 
-      bg-[#050505]/80 
-      backdrop-blur-2xl 
-      flex flex-col 
-      px-5 py-6 
-      text-white 
-      relative
-      overflow-hidden
-    "
-    >
+    <div className="relative z-10 flex flex-col h-full px-5 py-6">
       {/* Градиентные переливы */}
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute -right-20 top-16 h-52 w-52 rounded-full bg-[radial-gradient(circle,_rgba(74,222,128,0.18),_transparent)] blur-2xl" />
@@ -69,7 +71,7 @@ export default function AppSidebar() {
           </div>
         </Link>
 
-        {/* Мини-сводка по звонкам */}
+        {/* Мини-сводка по звонкам (данные с бэка) */}
         <div className="mb-5 rounded-2xl border border-neutral-800/90 bg-black/50 px-3 py-3 shadow-[0_10px_35px_rgba(0,0,0,0.8)]">
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-[11px] text-neutral-500 uppercase tracking-wide">
@@ -79,15 +81,29 @@ export default function AppSidebar() {
               автоанализ
             </span>
           </div>
+
           <div className="flex items-center justify-between text-[13px] text-neutral-200">
             <span>Звонков в работе</span>
-            <span className="font-semibold text-emerald-300">128</span>
+            {statsLoading ? (
+              <span className="h-3 w-8 rounded-full bg-neutral-800 animate-pulse" />
+            ) : (
+              <span className="font-semibold text-emerald-300">
+                {stats ? stats.callsInWork : "—"}
+              </span>
+            )}
           </div>
+
           <div className="mt-2 h-1.5 rounded-full bg-neutral-900 overflow-hidden">
-            <div className="h-full w-[68%] rounded-full bg-gradient-to-r from-emerald-400 to-lime-300" />
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-lime-300 transition-all duration-500"
+              style={{ width: `${statsLoading ? 0 : safePercent}%` }}
+            />
           </div>
+
           <p className="mt-1.5 text-[10px] text-neutral-500">
-            68% от дневного плана проверено CallX.
+            {statsLoading
+              ? "Обновляем статистику..."
+              : `${safePercent}% от дневного плана проверено CallX.`}
           </p>
         </div>
 
@@ -110,13 +126,7 @@ export default function AppSidebar() {
                 {active && (
                   <motion.div
                     layoutId="activeSidebarItem"
-                    className="
-                      absolute inset-0 
-                      rounded-lg 
-                      bg-gradient-to-r from-emerald-400/15 to-lime-300/10
-                      border border-emerald-400/20
-                      shadow-[0_0_20px_rgba(74,222,128,0.25)] 
-                    "
+                    className="absolute inset-0 rounded-lg bg-gradient-to-r from-emerald-400/15 to-lime-300/10 border border-emerald-400/20 shadow-[0_0_20px_rgba(74,222,128,0.25)]"
                     transition={{
                       type: "spring",
                       stiffness: 350,
@@ -162,12 +172,7 @@ export default function AppSidebar() {
                   {active && (
                     <motion.div
                       layoutId="activeSidebarItemSystem"
-                      className="
-                        absolute inset-0 
-                        rounded-lg 
-                        bg-gradient-to-r from-emerald-400/12 to-lime-300/8
-                        border border-emerald-400/15
-                      "
+                      className="absolute inset-0 rounded-lg bg-gradient-to-r from-emerald-400/12 to-lime-300/8 border border-emerald-400/15"
                       transition={{
                         type: "spring",
                         stiffness: 350,
@@ -206,6 +211,110 @@ export default function AppSidebar() {
           </div>
         </div>
       </div>
-    </aside>
+    </div>
+  );
+}
+
+export default function AppSidebar() {
+  const pathname = usePathname();
+  const [isMobileOpen, setIsMobileOpen] = useState(false);
+  const [stats, setStats] = useState<SidebarStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState(true);
+
+  useEffect(() => {
+    async function loadStats() {
+      try {
+        const res = await fetch("/api/sidebar/stats");
+        if (!res.ok) throw new Error("Failed to load stats");
+        const data: SidebarStats = await res.json();
+        setStats(data);
+      } catch (error) {
+        console.error("Failed to load sidebar stats", error);
+      } finally {
+        setStatsLoading(false);
+      }
+    }
+
+    loadStats();
+  }, []);
+
+  // закрываем бургер при смене роутов
+  useEffect(() => {
+    setIsMobileOpen(false);
+  }, [pathname]);
+
+  return (
+    <>
+      {/* Мобильный топ-бар с бургером (сверху слева) */}
+      <div className="fixed left-0 top-0 z-40 flex h-12 w-full items-center border-b border-neutral-900 bg-black/80 px-3 text-white backdrop-blur md:hidden">
+        <button
+          onClick={() => setIsMobileOpen((prev) => !prev)}
+          className="flex h-8 w-8 items-center justify-center rounded-lg border border-neutral-800 bg-neutral-950/80 hover:bg-neutral-900 transition"
+          aria-label="Открыть меню"
+        >
+          <div className="flex flex-col gap-0.5">
+            <span className="h-[2px] w-4 rounded-full bg-neutral-200" />
+            <span className="h-[2px] w-3 rounded-full bg-neutral-400" />
+            <span className="h-[2px] w-5 rounded-full bg-neutral-200" />
+          </div>
+        </button>
+
+        <span className="ml-3 text-[11px] tracking-[0.3em] uppercase text-neutral-500">
+          callx ai
+        </span>
+      </div>
+
+      {/* Десктопный сайдбар */}
+      <aside
+        className="
+          hidden md:flex
+          w-60 h-screen 
+          sticky top-0
+          border-r border-neutral-900 
+          bg-[#050505]/80 
+          backdrop-blur-2xl 
+          flex-col 
+          text-white 
+          relative
+          overflow-hidden
+        "
+      >
+        <SidebarContent
+          pathname={pathname}
+          stats={stats}
+          statsLoading={statsLoading}
+        />
+      </aside>
+
+      {/* Мобильный выезжающий сайдбар */}
+      {isMobileOpen && (
+        <div className="fixed inset-0 z-50 flex md:hidden">
+          {/* Тёмный фон */}
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => setIsMobileOpen(false)}
+          />
+
+          {/* Сам сайдбар */}
+          <aside
+            className="
+              relative z-50 
+              h-full w-64 
+              border-r border-neutral-900 
+              bg-[#050505]/95 
+              text-white 
+              overflow-hidden
+              shadow-[0_0_40px_rgba(0,0,0,0.9)]
+            "
+          >
+            <SidebarContent
+              pathname={pathname}
+              stats={stats}
+              statsLoading={statsLoading}
+            />
+          </aside>
+        </div>
+      )}
+    </>
   );
 }
