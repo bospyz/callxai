@@ -1,18 +1,29 @@
 // src/app/api/cron/process-calls/route.ts
-
 import { NextRequest, NextResponse } from "next/server";
 import { processNewCallsBatch } from "@/lib/call-processing";
 
-async function handleProcess(req: NextRequest) {
-  const url = req.nextUrl;
-  const secret = url.searchParams.get("secret");
-  const limitParam = url.searchParams.get("limit");
+export const dynamic = "force-dynamic";
 
-  if (!secret || secret !== process.env.CRON_SECRET) {
-    return new NextResponse("Forbidden: invalid cron secret", { status: 403 });
+const CRON_SECRET = process.env.CRON_SECRET;
+
+function checkSecret(req: NextRequest) {
+  const secretFromQuery = req.nextUrl.searchParams.get("secret");
+  if (!CRON_SECRET || secretFromQuery !== CRON_SECRET) {
+    return false;
+  }
+  return true;
+}
+
+export async function GET(req: NextRequest) {
+  if (!checkSecret(req)) {
+    return NextResponse.json(
+      { ok: false, message: "Unauthorized" },
+      { status: 401 }
+    );
   }
 
-  const limit = limitParam ? Number(limitParam) || 10 : 10;
+  const limitParam = req.nextUrl.searchParams.get("limit");
+  const limit = limitParam ? Math.max(1, Math.min(50, Number(limitParam))) : 10;
 
   try {
     const result = await processNewCallsBatch(limit);
@@ -23,22 +34,12 @@ async function handleProcess(req: NextRequest) {
     });
   } catch (err: any) {
     console.error("[cron/process-calls] Error:", err);
-
     return NextResponse.json(
       {
         ok: false,
-        message:
-          err instanceof Error ? err.message : "Internal error during process",
+        message: err?.message ?? "Unexpected error",
       },
-      { status: 500 },
+      { status: 500 }
     );
   }
-}
-
-export async function GET(req: NextRequest) {
-  return handleProcess(req);
-}
-
-export async function POST(req: NextRequest) {
-  return handleProcess(req);
 }
