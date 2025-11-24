@@ -1,14 +1,14 @@
-﻿// src/lib/amocrm.ts
-
-import { db } from "@/lib/db";
+﻿import { db } from "@/lib/db";
 import {
   CallStatus,
   IntegrationType,
   SubscriptionStatus,
 } from "@prisma/client";
 
+const AMO_STUB_MODE = process.env.AMO_STUB_MODE === "true";
+
 export type AmoIntegrationConfig = {
-  domain: string;           // xxx.amocrm.ru
+  domain: string; // arenasunset2.amocrm.ru
   apiDomain?: string | null;
   accessToken: string;
   refreshToken?: string | null;
@@ -74,10 +74,10 @@ async function amoFetch(
       Authorization: `Bearer ${config.accessToken}`,
       "Content-Type": "application/json",
     },
+    // можно добавить таймауты/agent при желании
   });
 
   if (res.status === 401) {
-    // TODO: refreshToken-логика
     throw new Error("amoCRM access token expired or invalid");
   }
 
@@ -93,20 +93,20 @@ async function amoFetch(
   }
 }
 
-type AmoCallItem = {
-  externalId: string;
-  audioUrl: string | null;
-  duration: number | null;
-  managerName: string | null;
-  phone: string | null;
-  raw: any;
-};
-
 async function fetchRecentCallsFromAmo(
   config: AmoIntegrationConfig,
   limit: number
-): Promise<AmoCallItem[]> {
-  // Упрощённый пример: тянем notes типа "звонок"
+): Promise<
+  {
+    externalId: string;
+    audioUrl: string | null;
+    duration: number | null;
+    managerName: string | null;
+    phone: string | null;
+    raw: any;
+  }[]
+> {
+  // Упрощённый пример: тянем notes типа звонков
   const result = await amoFetch(
     config,
     `/api/v4/leads/notes?note_type=10&limit=${limit}`
@@ -116,7 +116,7 @@ async function fetchRecentCallsFromAmo(
     return [];
   }
 
-  return result._embedded.notes.map((note: any): AmoCallItem => {
+  return result._embedded.notes.map((note: any) => {
     const externalId = String(note.id);
     const audioUrl =
       note.params?.file || note.params?.link || note.params?.url || null;
@@ -137,9 +137,41 @@ async function fetchRecentCallsFromAmo(
   });
 }
 
-/**
- * Основная функция синка последних звонков из amoCRM в таблицу Call.
- */
+// ---------- STUB-МОД ДЛЯ MVP ----------
+
+function buildStubItems(limit: number) {
+  const items: {
+    externalId: string;
+    audioUrl: string | null;
+    duration: number | null;
+    managerName: string | null;
+    phone: string | null;
+    raw: any;
+  }[] = [];
+
+  const now = Date.now();
+
+  for (let i = 0; i < limit; i++) {
+    const idx = i + 1;
+    items.push({
+      externalId: `stub-${now}-${idx}`,
+      audioUrl: null,
+      duration: 60 + i * 10,
+      managerName: `Stub Manager #${idx}`,
+      phone: `+7775333${("000" + idx).slice(-3)}`,
+      raw: {
+        stub: true,
+        index: idx,
+        createdAt: new Date(now - i * 60_000).toISOString(),
+      },
+    });
+  }
+
+  return items;
+}
+
+// ---------- ПУБЛИЧНАЯ ФУНКЦИЯ СИНКА ----------
+
 export async function syncAmoRecentCalls(opts: {
   companyId: string;
   limit?: number;
@@ -147,14 +179,85 @@ export async function syncAmoRecentCalls(opts: {
   const { companyId, limit = 50 } = opts;
 
   const amo = await getAmoIntegration(companyId);
+
   if (!amo) {
-    throw new Error("amoCRM integration not found or not configured");
+    if (!AMO_STUB_MODE) {
+      throw new Error("amoCRM integration not found or not configured");
+    }
+
+    // Даже если нет интеграции — в режиме заглушки всё равно создаём тестовые звонки
+    const stubItems = buildStubItems(limit);
+    const created = await saveItemsAsCalls(companyId, stubItems, "amocrm-stub-no-integration");
+
+    return {
+      ok: true,
+      created,
+      message: `STUB: создано ${created} тестовых звонков без реальной amoCRM (интеграция не настроена).`,
+    };
   }
 
-  const { config } = amo;
+  let items:
+    | {
+        externalId: string;
+        audioUrl: string | null;
+        duration: number | null;
+        managerName: string | null;
+        phone: string | null;
+        raw: any;
+      }[]
+    | null = null;
 
-  const items = await fetchRecentCallsFromAmo(config, limit);
+  if (AMO_STUB_MODE) {
+    // вообще не ходим в amo, сразу генерим заглушки
+    items = buildStubItems(limit);
+  } else {
+    // реальный запрос в amo
+    items = await fetchRecentCallsFromAmo(amo.config, limit);
+  }
 
+  let created = await saveItemsAsCalls(
+    companyId,
+    items,
+    AMO_STUB_MODE ? "amocrm-stub" : "amocrm"
+  );
+
+  // обновляем lastSyncAt (для реальной интеграции)
+  try {
+    const newConfig: AmoIntegrationConfig = {
+      ...amo.config,
+      lastSyncAt: new Date().toISOString(),
+    };
+
+    await db.integration.update({
+      where: { id: amo.id },
+      data: { config: newConfig },
+    });
+  } catch (err) {
+    console.error("Failed to update amo integration config", err);
+  }
+
+  return {
+    ok: true,
+    created,
+    message: AMO_STUB_MODE
+      ? `STUB: создано ${created} тестовых звонков (режим заглушки amoCRM).`
+      : `Импортированы последние ${limit} звонков из amoCRM. Новых записей: ${created}.`,
+  };
+}
+
+// Вспомогательная функция сохранения звонков в БД с дедупликацией по externalId
+async function saveItemsAsCalls(
+  companyId: string,
+  items: {
+    externalId: string;
+    audioUrl: string | null;
+    duration: number | null;
+    managerName: string | null;
+    phone: string | null;
+    raw: any;
+  }[],
+  source: string
+): Promise<number> {
   let created = 0;
 
   for (const item of items) {
@@ -180,7 +283,7 @@ export async function syncAmoRecentCalls(opts: {
         duration: item.duration,
         status: CallStatus.NEW,
         meta: {
-          source: "amocrm",
+          source,
           raw: item.raw,
           phone: item.phone,
           managerName: item.managerName,
@@ -191,24 +294,5 @@ export async function syncAmoRecentCalls(opts: {
     created += 1;
   }
 
-  // Обновляем lastSyncAt
-  try {
-    const newConfig: AmoIntegrationConfig = {
-      ...config,
-      lastSyncAt: new Date().toISOString(),
-    };
-
-    await db.integration.update({
-      where: { id: amo.id },
-      data: { config: newConfig },
-    });
-  } catch (err) {
-    console.error("Failed to update amo integration config", err);
-  }
-
-  return {
-    ok: true,
-    created,
-    message: `Импортированы последние ${limit} звонков из amoCRM. Новых записей: ${created}.`,
-  };
+  return created;
 }
