@@ -1,6 +1,5 @@
 ﻿import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { db } from "@/lib/db";
 
 export async function POST(req: NextRequest) {
   try {
@@ -61,16 +60,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    await db.paymentRequest.create({
-      data: {
-        companyId,
-        plan,
-        fullName,
-        companyName,
-        phone,
-        email,
-        // billingDetails, comment можно будет добавить в модель позже
-      },
+    console.log("[billing/request] new payment request", {
+      companyId,
+      plan,
+      fullName,
+      companyName,
+      phone,
+      email,
+      billingDetails,
+      comment,
     });
 
     return NextResponse.json(
