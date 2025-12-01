@@ -17,7 +17,7 @@ export type ProcessBatchResult = {
 export async function processNewCallsBatch(
   limit: number = 10
 ): Promise<ProcessBatchResult> {
-  const newCalls = await db.call.findMany({
+  const calls = await db.call.findMany({
     where: {
       status: CallStatus.NEW,
     },
@@ -27,25 +27,33 @@ export async function processNewCallsBatch(
     take: limit,
   });
 
-  const total = newCalls.length;
+  const total = calls.length;
   let processed = 0;
   let skipped = 0;
   const errors: { callId: string; message: string }[] = [];
 
-  for (const call of newCalls) {
-    try {
-      // Отмечаем как PROCESSING, чтобы не схватили другие воркеры/cron
+  for (const call of calls) {
+    // если нет audioUrl  помечаем ERROR и скипаем
+    if (!call.audioUrl) {
+      skipped += 1;
       await db.call.update({
         where: { id: call.id },
         data: {
-          status: CallStatus.PROCESSING,
+          status: CallStatus.ERROR,
+          meta: {
+            ...(call.meta as any),
+            error: "Missing audioUrl for call",
+          },
         },
       });
+      continue;
+    }
 
+    try {
       await processCall(call.id);
       processed += 1;
     } catch (err: any) {
-      const message = String(err?.message || err);
+      const message = err?.message ?? String(err ?? "Unknown error");
       errors.push({ callId: call.id, message });
 
       try {
@@ -54,9 +62,7 @@ export async function processNewCallsBatch(
           data: {
             status: CallStatus.ERROR,
             meta: {
-              // meta у нас типа Json, поэтому явно приводим к any,
-              // чтобы не было TS-ошибки "Spread types may only be created from object types"
-              ...((call.meta ?? {}) as any),
+              ...(call.meta as any),
               error: message,
             },
           },

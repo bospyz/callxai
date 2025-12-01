@@ -15,23 +15,26 @@ export async function POST(req: Request) {
       return new NextResponse("Forbidden", { status: 403 });
     }
 
-    await db.call.update({
+    const call = await db.call.findUnique({
       where: { id: callId },
-      data: { status: CallStatus.PROCESSING },
     });
+
+    if (!call) {
+      return new NextResponse("Call not found", { status: 404 });
+    }
 
     try {
       await processCall(callId);
-      // processCall ставит DONE
-      return NextResponse.json({ ok: true });
+      return new NextResponse("OK", { status: 200 });
     } catch (error: any) {
-      console.error("Error in processCall", error);
+      console.error("[/api/calls/process] processing error", error);
 
       await db.call.update({
         where: { id: callId },
         data: {
           status: CallStatus.ERROR,
           meta: {
+            ...(call.meta as any),
             error: String(error?.message || error),
           },
         },

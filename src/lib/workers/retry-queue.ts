@@ -6,7 +6,7 @@ import { enqueueCallProcessing } from "./queue";
 
 /**
  * Ретраим один конкретный звонок.
- * Если передан companyId — дополнительно проверяем принадлежность компании.
+ * Если передан companyId  дополнительно проверяем принадлежность компании.
  */
 export async function retrySingleCall(callId: string, companyId?: string) {
   const call = await db.call.findFirst({
@@ -14,11 +14,10 @@ export async function retrySingleCall(callId: string, companyId?: string) {
       id: callId,
       ...(companyId ? { companyId } : {}),
     },
-    select: { id: true },
   });
 
   if (!call) {
-    throw new Error("Call not found");
+    throw new Error("Call not found or does not belong to company");
   }
 
   await db.call.update({
@@ -29,22 +28,60 @@ export async function retrySingleCall(callId: string, companyId?: string) {
   });
 
   await enqueueCallProcessing({ callId: call.id });
+
+  return {
+    retried: 1,
+  };
 }
 
 /**
- * Ретраим все ERROR-звонки компании (ограничение по количеству).
+ * Ретраим ERROR-звонки для одной компании.
+ * max позволяет ограничить количество ретраев (например 50 в cron-скрипте).
  */
 export async function retryFailedCallsForCompany(
   companyId: string,
-  limit: number = 50
+  max?: number
 ) {
   const failedCalls = await db.call.findMany({
     where: {
       companyId,
       status: CallStatus.ERROR,
     },
-    select: { id: true },
-    take: limit,
+    orderBy: {
+      createdAt: "asc",
+    },
+    take: max ?? undefined,
+  });
+
+  for (const c of failedCalls) {
+    await db.call.update({
+      where: { id: c.id },
+      data: {
+        status: CallStatus.NEW,
+      },
+    });
+
+    await enqueueCallProcessing({ callId: c.id });
+  }
+
+  return {
+    retried: failedCalls.length,
+  };
+}
+
+/**
+ * Ретраим ВСЕ ERROR-звонки (по всем компаниям).
+ * max  глобальный лимит (опционально).
+ */
+export async function retryFailedCalls(max?: number) {
+  const failedCalls = await db.call.findMany({
+    where: {
+      status: CallStatus.ERROR,
+    },
+    orderBy: {
+      createdAt: "asc",
+    },
+    take: max ?? undefined,
   });
 
   for (const c of failedCalls) {

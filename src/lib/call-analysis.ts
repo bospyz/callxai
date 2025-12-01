@@ -1,8 +1,9 @@
 ﻿import { db } from "./db";
 import { getOpenAIClient } from "./openai";
-
-const openai = getOpenAIClient();
 import { CallStatus } from "@prisma/client";
+import OpenAI from "openai";
+
+const openai = getOpenAIClient() as any;
 
 const STUB_MODE = process.env.AMO_STUB_MODE === "true";
 const ALLOW_ANY_AUDIO = process.env.ALLOW_ANY_AUDIO === "true";
@@ -14,134 +15,138 @@ const ALLOWED_AUDIO_HOSTS = [
   // добавь свои домены (S3/CDN), если будешь хранить аудио сам
 ];
 
-function isAllowedUrl(url: string): boolean {
-  if (ALLOW_ANY_AUDIO) { return true; }
+type CallAnalysisResult = {
+  score: number;
+  sentiment: string;
+  meta: Record<string, unknown>;
+};
+
+function isHostAllowed(url: string): boolean {
+  if (ALLOW_ANY_AUDIO) return true;
   try {
-    const u = new URL(url);
-    return ALLOWED_AUDIO_HOSTS.some((host) => u.hostname.endsWith(host));
+    const parsed = new URL(url);
+    return ALLOWED_AUDIO_HOSTS.some((host) => parsed.hostname.endsWith(host));
   } catch {
     return false;
   }
 }
 
-export async function transcribeFromUrl(url: string): Promise<string> {
-  if (!isAllowedUrl(url)) {
-    throw new Error("Invalid or disallowed audio URL");
+async function transcribeAudioFromUrl(audioUrl: string): Promise<string> {
+  if (STUB_MODE) {
+    return "Транскрибация отключена (STUB_MODE). Это тестовый текст для демо аналитики звонка.";
   }
 
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Failed to download audio: ${res.status} ${res.statusText}`);
+  if (!isHostAllowed(audioUrl)) {
+    throw new Error("Audio host is not allowed. Проверь ALLOW_ANY_AUDIO или ALLOWED_AUDIO_HOSTS.");
   }
 
-  const arrayBuffer = await res.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
+  const response = await fetch(audioUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to download audio: ${response.status} ${response.statusText}`);
+  }
 
-  const transcript = await openai.audio.transcriptions.create({
-    // openai SDK умеет работать с Buffer
-    file: buffer as any,
-    model: "gpt-4o-mini-transcribe", // или whisper-1 / другая модель
+  const arrayBuffer = await response.arrayBuffer();
+  const uint8 = new Uint8Array(arrayBuffer);
+
+  // OpenAI SDK helper: превращаем буфер в "файл"
+  const file = await (OpenAI as any).toFile(uint8, "call-audio.webm");
+
+  const transcription = await (openai as any).audio.transcriptions.create({
+    file,
+    model: "gpt-4o-mini-transcribe",
     response_format: "text",
+    language: "ru",
   });
 
-  return transcript as unknown as string;
+  if (typeof transcription === "string") {
+    return transcription;
+  }
+
+  if (transcription && typeof (transcription as any).text === "string") {
+    return (transcription as any).text as string;
+  }
+
+  throw new Error("Unexpected transcription response from OpenAI");
 }
 
-type AnalysisResult = {
-  score: number;
-  sentiment: string;
-  strengths: string[];
-  weaknesses: string[];
-  meta: any;
-};
-
-export async function analyzeTranscript(text: string): Promise<AnalysisResult> {
-  if (!text.trim()) {
+async function analyzeTranscript(transcript: string): Promise<CallAnalysisResult> {
+  if (!transcript || !transcript.trim()) {
     return {
       score: 0,
       sentiment: "neutral",
-      strengths: [],
-      weaknesses: [],
       meta: {
-        verdict: "no_audio",
         reason: "empty_transcript",
       },
     };
   }
 
-  const systemPrompt =
-    "Ты строгий, но конструктивный руководитель отдела продаж. " +
-    "Анализируешь транскрипт звонка менеджера с клиентом и отвечаешь ТОЛЬКО JSON-ом. " +
-    "JSON-объект должен содержать поля: " +
-    "score (число от 0 до 100), " +
-    "sentiment ('positive' | 'neutral' | 'negative'), " +
-    "strengths (массив строк), " +
-    "weaknesses (массив строк), " +
-    "meta (любой объект с деталями анализа, этапами, упоминаниями скрипта и т.п.).";
+  const prompt = `
+Ты  AI-аналитик звонков для sales-команд. Твоя задача  оценить разговор менеджера с клиентом.
 
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4.1-mini",
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: text },
-    ],
+Ниже транскрипт звонка (на русском или казахском). Твоя задача  вернуть СТРОГО один JSON без лишнего текста с полями:
+- score: целое число от 0 до 100 (качество работы менеджера)
+- sentiment: "positive" | "neutral" | "negative"
+- script_stages: объект с булевыми полями:
+  - greeting
+  - need_identification
+  - offer_presentation
+  - objections_handling
+  - closing_attempt
+- insights: массив коротких строк с ключевыми выводами (2-5 штук)
+- recommendations: массив коротких советов для менеджера (2-5 штук)
+
+Ответ будь ТОЛЬКО в формате JSON.
+
+Транскрипт:
+"""${transcript}"""
+`.trim();
+
+  const completion = await (openai as any).chat.completions.create({
+    model: "gpt-4o-mini",
     response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content:
+          "Ты  аналитик продаж. Говори кратко и строго в JSON. Не добавляй никакого пояснительного текста.",
+      },
+      {
+        role: "user",
+        content: prompt,
+      },
+    ],
   });
 
-  const raw = completion.choices[0].message.content || "{}";
+  const raw = completion?.choices?.[0]?.message?.content;
+  if (!raw) {
+    throw new Error("Empty response from OpenAI when analyzing transcript");
+  }
 
   let parsed: any;
   try {
-    parsed = JSON.parse(raw as string);
-  } catch {
-    parsed = {};
+    parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+  } catch (err) {
+    throw new Error("Failed to parse JSON from OpenAI response");
   }
 
-  const score =
-    typeof parsed.score === "number"
-      ? Math.max(0, Math.min(100, parsed.score))
-      : 0;
-
-  const sentiment =
-    typeof parsed.sentiment === "string" ? parsed.sentiment : "neutral";
-
-  const strengths = Array.isArray(parsed.strengths)
-    ? parsed.strengths.map((s: any) => String(s))
-    : [];
-
-  const weaknesses = Array.isArray(parsed.weaknesses)
-    ? parsed.weaknesses.map((w: any) => String(w))
-    : [];
-
-  const meta = parsed.meta ?? parsed;
+  const score = typeof parsed.score === "number" ? parsed.score : 0;
+  const sentiment = typeof parsed.sentiment === "string" ? parsed.sentiment : "neutral";
 
   return {
     score,
     sentiment,
-    strengths,
-    weaknesses,
-    meta,
+    meta: parsed,
   };
 }
 
+/**
+ * Основная функция обработки одного звонка.
+ * 1) достаём звонок из БД
+ * 2) тянем и транскрибируем аудио
+ * 3) прогоняем через LLM-анализ
+ * 4) сохраняем результат в БД
+ */
 export async function processCall(callId: string): Promise<void> {
-  if (STUB_MODE) {
-    await db.call.update({
-      where: { id: callId },
-      data: {
-        status: CallStatus.DONE,
-        transcript: "Тестовый транскрипт (stub)",
-        score: 80,
-        sentiment: "positive",
-        meta: {
-          stub: true,
-          reason: "AMO_STUB_MODE enabled",
-        },
-      },
-    });
-    return;
-  }
-
   const call = await db.call.findUnique({
     where: { id: callId },
   });
@@ -154,7 +159,17 @@ export async function processCall(callId: string): Promise<void> {
     throw new Error(`Call ${callId} has no audioUrl`);
   }
 
-  const transcript = await transcribeFromUrl(call.audioUrl);
+  // помечаем звонок как PROCESSING, чтобы не схватить его повторно
+  if (call.status !== CallStatus.PROCESSING) {
+    await db.call.update({
+      where: { id: callId },
+      data: {
+        status: CallStatus.PROCESSING,
+      },
+    });
+  }
+
+  const transcript = await transcribeAudioFromUrl(call.audioUrl);
   const analysis = await analyzeTranscript(transcript);
 
   await db.call.update({
@@ -164,9 +179,7 @@ export async function processCall(callId: string): Promise<void> {
       transcript,
       score: analysis.score,
       sentiment: analysis.sentiment,
-      meta: analysis.meta,
+      meta: analysis.meta as any,
     },
   });
 }
-
-

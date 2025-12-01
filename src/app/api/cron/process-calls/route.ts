@@ -1,4 +1,4 @@
-// src/app/api/cron/process-calls/route.ts
+﻿// src/app/api/cron/process-calls/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { processNewCallsBatch } from "@/lib/call-processing";
 
@@ -17,16 +17,17 @@ function checkSecret(req: NextRequest) {
 export async function GET(req: NextRequest) {
   if (!checkSecret(req)) {
     return NextResponse.json(
-      { ok: false, message: "Unauthorized" },
-      { status: 401 }
+      { ok: false, message: "Forbidden" },
+      { status: 403 }
     );
   }
 
   const limitParam = req.nextUrl.searchParams.get("limit");
-  const limit = limitParam ? Math.max(1, Math.min(50, Number(limitParam))) : 10;
+  const limit = limitParam ? Number(limitParam) : 10;
+  const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 10;
 
   try {
-    const result = await processNewCallsBatch(limit);
+    const result = await processNewCallsBatch(safeLimit);
 
     return NextResponse.json({
       ok: true,

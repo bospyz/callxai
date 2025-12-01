@@ -1,6 +1,5 @@
-import { NextRequest, NextResponse } from "next/server";
+﻿import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { db } from "@/lib/db";
 import { retrySingleCall } from "@/lib/workers/retry-queue";
 
 export async function POST(req: NextRequest) {
@@ -15,31 +14,14 @@ export async function POST(req: NextRequest) {
     return new NextResponse("No companyId in session", { status: 400 });
   }
 
-  let body: any;
   try {
-    body = await req.json();
-  } catch {
-    return new NextResponse("Invalid JSON", { status: 400 });
-  }
+    const { callId } = await req.json();
 
-  const callId = body?.callId as string | undefined;
-  if (!callId) {
-    return new NextResponse('Field "callId" is required', { status: 400 });
-  }
+    if (!callId || typeof callId !== "string") {
+      return new NextResponse("callId is required", { status: 400 });
+    }
 
-  const call = await db.call.findFirst({
-    where: {
-      id: callId,
-      companyId,
-    },
-  });
-
-  if (!call) {
-    return new NextResponse("Call not found for this company", { status: 404 });
-  }
-
-  try {
-    const result = await retrySingleCall(callId);
+    const result = await retrySingleCall(callId, companyId);
 
     return NextResponse.json({
       ok: true,

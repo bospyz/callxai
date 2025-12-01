@@ -9,32 +9,45 @@ export type CallJob = {
   callId: string;
 };
 
-/**
- * Простая in-memory очередь обработки звонков.
- * Работает в одном инстансе node-процесса.
- * Для продакшена это можно заменить на BullMQ/Redis,
- * сохранив тот же интерфейс enqueueCallProcessing.
- */
-
-const queue: CallJob[] = [];
+let queue: CallJob[] = [];
 let isProcessing = false;
 
-export async function enqueueCallProcessing(job: CallJob) {
+/**
+ * Добавляет звонок в очередь обработки.
+ */
+export async function enqueueCallProcessing(job: CallJob): Promise<void> {
   queue.push(job);
-  // Не ждём завершения, просто триггерим обработку
-  void processNext();
+  logInfo("enqueueCallProcessing", {
+    context: "call-queue.enqueue",
+    extra: { callId: job.callId, queueSize: queue.length },
+  });
+
+  if (!isProcessing) {
+    void processNext();
+  }
 }
 
 async function processNext() {
   if (isProcessing) return;
-  const job = queue.shift();
-  if (!job) return;
+  if (queue.length === 0) return;
 
   isProcessing = true;
+
+  const job = queue.shift();
+  if (!job) {
+    isProcessing = false;
+    return;
+  }
+
   const { callId } = job;
 
+  logInfo("Processing call from queue", {
+    context: "call-queue.processNext",
+    extra: { callId },
+  });
+
   try {
-    // Обновляем статус на PROCESSING
+    // помечаем звонок как PROCESSING
     await db.call.update({
       where: { id: callId },
       data: {
@@ -42,30 +55,21 @@ async function processNext() {
       },
     });
 
-    logInfo("Start processing call", {
-      context: "call-queue",
-      extra: { callId },
-    });
-
-    // Основная логика анализа звонка
     await processCall(callId);
-
-    logInfo("Call processed successfully", {
-      context: "call-queue",
-      extra: { callId },
-    });
-  } catch (err) {
+  } catch (err: any) {
     logError(err, {
-      context: "call-queue.processCall",
+      context: "call-queue.processNext",
       extra: { callId },
     });
 
-    // В случае ошибки помечаем звонок как ERROR
     try {
       await db.call.update({
         where: { id: callId },
         data: {
           status: CallStatus.ERROR,
+          meta: {
+            error: String(err?.message || err),
+          },
         },
       });
     } catch (updateErr) {
