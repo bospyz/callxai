@@ -7,10 +7,6 @@
     {
       "path": "/api/cron/process-calls?secret=0608506db2bfa42682795397b1d3700b6414b43d2456a4be20081d8238b4d9c8",
       "schedule": "30 2 * * *"
-    },
-    {
-      "path": "/api/cron/cleanup-calls?secret=0608506db2bfa42682795397b1d3700b6414b43d2456a4be20081d8238b4d9c8",
-      "schedule": "0 3 * * *"
     }
   ]
 }
