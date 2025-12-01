@@ -46,13 +46,10 @@ async function transcribeAudioFromUrl(audioUrl: string): Promise<string> {
   }
 
   const arrayBuffer = await response.arrayBuffer();
-  const uint8 = new Uint8Array(arrayBuffer);
-
-  // OpenAI SDK helper: превращаем буфер в "файл"
-  const file = await (OpenAI as any).toFile(uint8, "call-audio.webm");
+  const buffer = Buffer.from(arrayBuffer); //  даём OpenAI именно бинарник
 
   const transcription = await (openai as any).audio.transcriptions.create({
-    file,
+    file: buffer,
     model: "gpt-4o-mini-transcribe",
     response_format: "text",
     language: "ru",
