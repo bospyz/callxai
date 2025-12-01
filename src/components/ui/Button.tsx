@@ -4,7 +4,11 @@ type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: "primary" | "ghost";
 };
 
-export function Button({ variant = "primary", className, ...props }: ButtonProps) {
+export function Button({
+  variant = "primary",
+  className,
+  ...props
+}: ButtonProps) {
   return (
     <button
       {...props}
@@ -13,7 +17,8 @@ export function Button({ variant = "primary", className, ...props }: ButtonProps
         variant === "primary" &&
           "bg-white text-black hover:bg-neutral-200 font-semibold",
         variant === "ghost" &&
-          "border border-neutral-800 text-neutral-300 hover:bg-neutral-900",
+          "text-neutral-300 hover:bg-neutral-900 border border-neutral-800",
+        props.disabled && "opacity-60 cursor-not-allowed",
         className
       )}
     />

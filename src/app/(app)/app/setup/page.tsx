@@ -9,7 +9,6 @@ export default function SetupPage() {
   const router = useRouter();
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [loading, setLoading] = useState(false);
-
   const nextStep = () => {
     setStep((prev) => (prev === 3 ? 3 : ((prev + 1) as 1 | 2 | 3)));
   };

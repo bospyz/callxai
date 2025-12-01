@@ -4,6 +4,9 @@ import { getOpenAIClient } from "./openai";
 const openai = getOpenAIClient();
 import { CallStatus } from "@prisma/client";
 
+const STUB_MODE = process.env.AMO_STUB_MODE === "true";
+const ALLOW_ANY_AUDIO = process.env.ALLOW_ANY_AUDIO === "true";
+
 const ALLOWED_AUDIO_HOSTS = [
   "amocrm.ru",
   "amocrm.com",
@@ -12,6 +15,7 @@ const ALLOWED_AUDIO_HOSTS = [
 ];
 
 function isAllowedUrl(url: string): boolean {
+  if (ALLOW_ANY_AUDIO) { return true; }
   try {
     const u = new URL(url);
     return ALLOWED_AUDIO_HOSTS.some((host) => u.hostname.endsWith(host));
@@ -121,6 +125,23 @@ export async function analyzeTranscript(text: string): Promise<AnalysisResult> {
 }
 
 export async function processCall(callId: string): Promise<void> {
+  if (STUB_MODE) {
+    await db.call.update({
+      where: { id: callId },
+      data: {
+        status: CallStatus.DONE,
+        transcript: "Тестовый транскрипт (stub)",
+        score: 80,
+        sentiment: "positive",
+        meta: {
+          stub: true,
+          reason: "AMO_STUB_MODE enabled",
+        },
+      },
+    });
+    return;
+  }
+
   const call = await db.call.findUnique({
     where: { id: callId },
   });
@@ -147,3 +168,5 @@ export async function processCall(callId: string): Promise<void> {
     },
   });
 }
+
+

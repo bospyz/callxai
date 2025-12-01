@@ -5,7 +5,7 @@ generator client {
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL") // если добавил
+  directUrl = env("DIRECT_URL")
 }
 
 enum Role {
@@ -19,7 +19,6 @@ enum CallStatus {
   PROCESSING
   DONE
   ERROR
-  
 }
 
 enum IntegrationType {
@@ -33,23 +32,33 @@ enum SubscriptionStatus {
   CANCELED
 }
 
+enum PaymentRequestStatus {
+  PENDING
+  CONTACTED
+  PAID
+  CANCELLED
+}
+
 model Company {
   id               String   @id @default(cuid())
   stripeCustomerId String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  name  String
-  phone String?
+  name                String
+  phone               String?
+  onboardingCompleted Boolean  @default(false) // 👈 НОВОЕ ПОЛЕ
 
-  users         User[]
-  managers      Manager[]
-  calls         Call[]
-  subscriptions Subscription[]
-  integrations  Integration[]
+  users            User[]
+  managers         Manager[]
+  calls            Call[]
+  subscriptions    Subscription[]
+  integrations     Integration[]
+  paymentRequests  PaymentRequest[]
 
   @@index([name])
 }
+
 
 model User {
   id        String   @id @default(cuid())
@@ -63,6 +72,24 @@ model User {
 
   companyId String
   company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+model PaymentRequest {
+  id String @id @default(cuid())
+
+  company   Company @relation(fields: [companyId], references: [id])
+  companyId String
+
+  plan        String
+  fullName    String
+  companyName String
+  phone       String
+  email       String
+
+  status PaymentRequestStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Manager {

@@ -1,27 +1,29 @@
 ﻿import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
 import { getCompanyAnalytics } from "@/lib/analytics/AnalyticsService";
+import { requireAuthWithCompany } from "@/lib/auth-guard";
 
 export async function GET(req: NextRequest) {
-  const session = await auth();
-
-  if (!session?.user) {
-    return new NextResponse("Unauthorized", { status: 401 });
-  }
-
-  const companyId = (session.user as any).companyId as string | undefined;
-  if (!companyId) {
-    return new NextResponse("No companyId in session", { status: 400 });
-  }
-
-  const { searchParams } = new URL(req.url);
-  const daysParam = searchParams.get("days");
-  const days = daysParam ? Number(daysParam) : 30;
-
   try {
-    const analytics = await getCompanyAnalytics(companyId, isNaN(days) ? 30 : days);
+    const { companyId } = await requireAuthWithCompany();
+
+    const { searchParams } = new URL(req.url);
+    const daysParam = searchParams.get("days");
+    const days = daysParam ? Number(daysParam) : 30;
+    const safeDays = Number.isNaN(days) ? 30 : days;
+
+    const analytics = await getCompanyAnalytics(companyId, safeDays);
+
     return NextResponse.json({ ok: true, analytics });
-  } catch (err) {
+  } catch (err: any) {
+    const msg = String(err?.message || err);
+
+    if (msg.startsWith("Unauthorized")) {
+      return new NextResponse("Unauthorized", { status: 401 });
+    }
+    if (msg.includes("No companyId in session")) {
+      return new NextResponse("No companyId in session", { status: 400 });
+    }
+
     console.error("[API] /api/analytics/summary error", err);
     return new NextResponse("Internal Server Error", { status: 500 });
   }

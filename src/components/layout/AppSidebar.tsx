@@ -1,10 +1,9 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useSession, signOut } from "next-auth/react";
 import { motion } from "framer-motion";
-import { cn } from "@/lib/utils";
-import { useEffect, useState } from "react";
 
 const mainItems = [
   { href: "/app", label: "Дэшборд" },
@@ -19,223 +18,172 @@ const systemItems = [
   { href: "/app/settings", label: "Настройки" },
 ];
 
-function SidebarInner({ pathname }: { pathname: string | null }) {
-  function isActive(href: string) {
-    return pathname === href || pathname?.startsWith(href + "/");
-  }
+const ACCENT = "#D1FE17";
 
+type NavItemProps = {
+  href: string;
+  label: string;
+  active: boolean;
+};
+
+function NavItem({ href, label, active }: NavItemProps) {
   return (
-    <>
-      {/* Градиентные переливы */}
-      <div className="pointer-events-none absolute inset-0">
-        <div className="absolute -right-20 top-16 h-52 w-52 rounded-full bg-[radial-gradient(circle,_rgba(74,222,128,0.18),_transparent)] blur-2xl" />
-        <div className="absolute -left-24 bottom-28 h-48 w-48 rounded-full bg-[radial-gradient(circle,_rgba(34,197,94,0.12),_transparent)] blur-2xl" />
-        <div className="absolute inset-0 opacity-[0.04] [background-image:radial-gradient(circle_at_1px_1px,#ffffff20_1px,transparent_0)] [background-size:14px_14px]" />
-      </div>
-
-      <div className="relative z-10 flex flex-col h-full px-5 py-6">
-        {/* ЛОГО + workspace */}
-        <Link
-          href="/"
-          className="flex items-center justify-between mb-6 group hover:opacity-90 transition"
-        >
-          <div className="flex items-center gap-2">
-            <div className="h-7 w-7 rounded-xl bg-gradient-to-br from-emerald-400 to-lime-300 shadow-[0_0_25px_rgba(74,222,128,0.7)] flex items-center justify-center text-[10px] font-black text-black">
-              CX
-            </div>
-
-            <div className="flex flex-col leading-tight">
-              <span className="text-[11px] tracking-[0.3em] uppercase text-neutral-500 group-hover:text-emerald-400 transition">
-                callx ai
-              </span>
-              <span className="text-[10px] text-neutral-600">
-                workspace: <span className="text-neutral-300">Sales HQ</span>
-              </span>
-            </div>
-          </div>
-        </Link>
-
-        {/* ОСНОВНАЯ НАВИГАЦИЯ */}
-        <nav className="flex flex-col gap-1 text-[13px] text-neutral-400 mb-4">
-          {mainItems.map((item) => {
-            const active = isActive(item.href);
-
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={cn(
-                  "group relative flex items-center gap-2 px-3 py-2 rounded-lg transition-all duration-200 overflow-hidden",
-                  active
-                    ? "text-emerald-300"
-                    : "hover:bg-neutral-900/60 hover:text-white"
-                )}
-              >
-                {active && (
-                  <motion.div
-                    layoutId="activeSidebarItem"
-                    className="absolute inset-0 rounded-lg bg-gradient-to-r from-emerald-400/15 to-lime-300/10 border border-emerald-400/20 shadow-[0_0_20px_rgba(74,222,128,0.25)]"
-                    transition={{
-                      type: "spring",
-                      stiffness: 350,
-                      damping: 30,
-                    }}
-                  />
-                )}
-
-                {active && (
-                  <motion.div
-                    layoutId="activeSidebarIndicator"
-                    className="absolute left-0 top-1 bottom-1 w-[3px] rounded-r-md bg-emerald-400 shadow-[0_0_12px_rgba(74,222,128,0.8)]"
-                  />
-                )}
-
-                <span className="relative z-10">{item.label}</span>
-              </Link>
-            );
-          })}
-        </nav>
-
-        {/* СИСТЕМНЫЕ РАЗДЕЛЫ */}
-        <div className="mt-3 pt-3 border-t border-neutral-900">
-          <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-600 mb-2">
-            система
-          </p>
-
-          <nav className="flex flex-col gap-1 text-[13px] text-neutral-400">
-            {systemItems.map((item) => {
-              const active = isActive(item.href);
-
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={cn(
-                    "group relative flex items-center gap-2 px-3 py-2 rounded-lg transition-all duration-200 overflow-hidden",
-                    active
-                      ? "text-emerald-300"
-                      : "hover:bg-neutral-900/60 hover:text-white"
-                  )}
-                >
-                  {active && (
-                    <motion.div
-                      layoutId="activeSidebarItemSystem"
-                      className="absolute inset-0 rounded-lg bg-gradient-to-r from-emerald-400/12 to-lime-300/8 border border-emerald-400/15"
-                      transition={{
-                        type: "spring",
-                        stiffness: 350,
-                        damping: 30,
-                      }}
-                    />
-                  )}
-
-                  {active && (
-                    <motion.div
-                      layoutId="activeSidebarIndicatorSystem"
-                      className="absolute left-0 top-1 bottom-1 w-[2px] rounded-r-md bg-emerald-400/80"
-                    />
-                  )}
-
-                  <span className="relative z-10">{item.label}</span>
-                </Link>
-              );
-            })}
-          </nav>
-        </div>
-
-        {/* ФУТЕР: статус + версия */}
-        <div className="mt-auto pt-5 border-t border-neutral-900 text-[11px] text-neutral-600 flex flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-[pulse_1.6s_ease-in-out_infinite]" />
-              <span className="text-neutral-400">amoCRM</span>
-            </div>
-            <span className="text-neutral-500">API подключено</span>
-          </div>
-
-          <div className="flex items-center justify-between text-neutral-700">
-            <span>v1.0.0</span>
-            <span>© {new Date().getFullYear()} CallXAI</span>
-          </div>
-        </div>
-      </div>
-    </>
+    <Link
+      href={href}
+      className={`flex items-center justify-between rounded-lg px-3 py-2 text-[13px] transition-all border
+      ${
+        active
+          ? "bg-neutral-950 border-[#00F6A4] text-white"
+          : "bg-black border-neutral-900 text-neutral-300 hover:text-white hover:border-neutral-600 hover:bg-neutral-950"
+      }`}
+    >
+      <span>{label}</span>
+    </Link>
   );
 }
 
 export default function AppSidebar() {
   const pathname = usePathname();
-  const [isMobileOpen, setIsMobileOpen] = useState(false);
+  const router = useRouter();
+  const { data: session } = useSession();
 
-  // закрываем бургер при смене роутов
-  useEffect(() => {
-    setIsMobileOpen(false);
-  }, [pathname]);
+  const email = session?.user?.email ?? "demo@callxai.dev";
+  const name = session?.user?.name ?? "Руководитель";
+  const avatarLetter = (name || email)[0]?.toUpperCase() ?? "C";
+
+  const userAny = session?.user as any;
+  const companyName =
+    userAny?.companyName ?? userAny?.company?.name ?? "Ваша компания";
+
+  async function handleLogout() {
+    await signOut({ redirect: false });
+    router.push("/");
+  }
+
+  function isActive(href: string) {
+    if (href === "/app") {
+      return pathname === "/app" || pathname === "/app/";
+    }
+    return pathname === href || pathname?.startsWith(href + "/");
+  }
 
   return (
-    <>
-      {/* Мобильный топ-бар с бургером (сверху слева) */}
-      <div className="fixed left-0 top-0 z-40 flex h-12 w-full items-center border-b border-neutral-900 bg-black/80 px-3 text-white backdrop-blur md:hidden">
-        <button
-          onClick={() => setIsMobileOpen((prev) => !prev)}
-          className="flex h-8 w-8 items-center justify-center rounded-lg border border-neutral-800 bg-neutral-950/80 hover:bg-neutral-900 transition"
-          aria-label="Открыть меню"
-        >
-          <div className="flex flex-col gap-0.5">
-            <span className="h-[2px] w-4 rounded-full bg-neutral-200" />
-            <span className="h-[2px] w-3 rounded-full bg-neutral-400" />
-            <span className="h-[2px] w-5 rounded-full bg-neutral-200" />
-          </div>
-        </button>
-
-        <span className="ml-3 text-[11px] tracking-[0.3em] uppercase text-neutral-500">
-          callx ai
-        </span>
-      </div>
-
-      {/* Десктопный сайдбар */}
-      <aside
-        className="
-          hidden md:flex
-          w-60 h-screen 
-          sticky top-0
-          border-r border-neutral-900 
-          bg-[#050505]/80 
-          backdrop-blur-2xl 
-          flex-col 
-          text-white 
-          relative
-          overflow-hidden
-        "
+    <aside className="hidden md:flex md:sticky md:top-0 h-screen w-[280px] border-r border-neutral-900 bg-black text-white">
+      <motion.div
+        initial={{ opacity: 0, x: -8 }}
+        animate={{ opacity: 1, x: 0 }}
+        transition={{ duration: 0.25, ease: "easeOut" }}
+        className="flex h-full w-full flex-col px-4 py-4 gap-6"
       >
-        <SidebarInner pathname={pathname} />
-      </aside>
+        {/* Бренд — ссылка на лендинг */}
+        <Link
+          href="/"
+          className="inline-flex flex-col gap-0.5 rounded-xl border border-neutral-900 bg-neutral-950 px-3 py-2 cursor-pointer transition hover:border-emerald-400/80 hover:bg-neutral-900"
+        >
+          <span className="text-[11px] uppercase tracking-[0.22em] text-neutral-500">
+            callx ai
+          </span>
+          <span className="text-sm font-medium text-neutral-50 max-w-[150px] truncate">
+            {companyName}
+          </span>
+        </Link>
 
-      {/* Мобильный выезжающий сайдбар */}
-      {isMobileOpen && (
-        <div className="fixed inset-0 z-50 flex md:hidden">
-          {/* Тёмный фон */}
-          <div
-            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            onClick={() => setIsMobileOpen(false)}
-          />
+        {/* Основное меню + системное */}
+        <div className="flex-1 flex flex-col gap-6 overflow-y-auto">
+          <div className="space-y-2">
+            <div className="text-[11px] uppercase tracking-[0.22em] text-neutral-600">
+              menu
+            </div>
+            <nav className="space-y-1.5">
+              {mainItems.map((item) => (
+                <NavItem
+                  key={item.href}
+                  href={item.href}
+                  label={item.label}
+                  active={isActive(item.href)}
+                />
+              ))}
+            </nav>
+          </div>
 
-          {/* Сам сайдбар */}
-          <aside
-            className="
-              relative z-50 
-              h-full w-64 
-              border-r border-neutral-900 
-              bg-[#050505]/95 
-              text-white 
-              overflow-hidden
-              shadow-[0_0_40px_rgba(0,0,0,0.9)]
-            "
-          >
-            <SidebarInner pathname={pathname} />
-          </aside>
+          <div className="space-y-2 border-t border-neutral-900 pt-4">
+            <div className="text-[11px] uppercase tracking-[0.22em] text-neutral-600">
+              system
+            </div>
+            <nav className="space-y-1.5">
+              {systemItems.map((item) => (
+                <NavItem
+                  key={item.href}
+                  href={item.href}
+                  label={item.label}
+                  active={isActive(item.href)}
+                />
+              ))}
+            </nav>
+          </div>
+
+          {/* Статус интеграций */}
+          <div className="space-y-2 border-t border-neutral-900 pt-4">
+            <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.22em] text-neutral-600">
+              <span>integrations</span>
+              <span
+                className="text-[10px] font-medium"
+                style={{ color: ACCENT }}
+              >
+                online
+              </span>
+            </div>
+
+            <div className="rounded-xl border border-neutral-900 px-3 py-3 space-y-1.5 bg-neutral-950">
+              <div className="flex items-center justify-between text-[12px]">
+                <span className="text-neutral-200">amoCRM</span>
+                <span className="h-1.5 w-1.5 rounded-full bg-[#00F6A4]" />
+              </div>
+              <p className="text-[11px] text-neutral-500">
+                Синхронизация активна. Новые звонки подтягиваются каждые 15
+                минут.
+              </p>
+              <button
+                type="button"
+                className="mt-2 inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-[11px] font-medium border border-neutral-800 text-neutral-100 hover:border-neutral-500 hover:bg-black transition-all"
+              >
+                Все звонки
+              </button>
+            </div>
+          </div>
         </div>
-      )}
-    </>
+
+        {/* Профиль + версия */}
+        <div className="border-t border-neutral-900 pt-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="h-9 w-9 rounded-full bg-neutral-950 border border-neutral-800 flex items-center justify-center text-[13px] font-semibold">
+                {avatarLetter}
+              </div>
+              <div className="flex flex-col leading-tight">
+                <span className="text-[13px] text-neutral-100 max-w-[120px] truncate">
+                  {name}
+                </span>
+                <span className="text-[11px] text-neutral-500 max-w-[140px] truncate">
+                  {email}
+                </span>
+              </div>
+            </div>
+
+            <button
+              onClick={handleLogout}
+              className="text-[11px] px-3 py-1.5 rounded-lg border border-neutral-800 text-neutral-300 hover:text-black hover:bg-[#D1FE17] hover:border-transparent transition-all"
+            >
+              Выйти
+            </button>
+          </div>
+
+          <div className="mt-2 flex items-center justify-between text-[10px] text-neutral-600">
+            <span>v1.0.0</span>
+            <span>{new Date().getFullYear()} · CallX AI</span>
+          </div>
+        </div>
+      </motion.div>
+    </aside>
   );
 }
