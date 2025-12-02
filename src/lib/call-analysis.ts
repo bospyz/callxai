@@ -1,8 +1,20 @@
 ﻿import { db } from "./db";
 import { getOpenAIClient } from "./openai";
 import { CallStatus } from "@prisma/client";
+import OpenAI from "openai";
 
 const openai = getOpenAIClient() as any;
+
+// Флаги
+const STUB_MODE = process.env.AMO_STUB_MODE === "true"; // если true – используем фейковую транскрибацию
+const ALLOW_ANY_AUDIO = process.env.ALLOW_ANY_AUDIO === "true";
+
+// Какие хосты аудио считаем разрешёнными
+const ALLOWED_AUDIO_HOSTS = [
+  "amocrm.ru",
+  "amocrm.com",
+  "cdn.amocrm.ru",
+];
 
 type CallAnalysisResult = {
   score: number;
@@ -10,11 +22,58 @@ type CallAnalysisResult = {
   meta: Record<string, unknown>;
 };
 
-//  ВРЕМЕННАЯ транскрибация  без реального аудио, просто заглушка
-async function transcribeAudioFromUrl(audioUrl: string | null | undefined): Promise<string> {
-  return "STUB: транскрибация отключена. Это демо-текст для анализа звонка. Реальная расшифровка аудио будет подключена позже.";
+function isHostAllowed(url: string): boolean {
+  if (ALLOW_ANY_AUDIO) return true;
+  try {
+    const parsed = new URL(url);
+    return ALLOWED_AUDIO_HOSTS.some((host) => parsed.hostname.endsWith(host));
+  } catch {
+    return false;
+  }
 }
 
+// 1) Транскрибация аудио по URL через OpenAI
+async function transcribeAudioFromUrl(audioUrl: string): Promise<string> {
+  if (STUB_MODE) {
+    // fallback, если захочешь совсем отключить реальные запросы
+    return "Транскрибация отключена (STUB_MODE). Это тестовый текст для демо аналитики звонка.";
+  }
+
+  if (!isHostAllowed(audioUrl)) {
+    throw new Error("Audio host is not allowed. Проверь ALLOW_ANY_AUDIO или ALLOWED_AUDIO_HOSTS.");
+  }
+
+  const response = await fetch(audioUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to download audio: ${response.status} ${response.statusText}`);
+  }
+
+  // берём бинарный контент
+  const arrayBuffer = await response.arrayBuffer();
+  const uint8 = new Uint8Array(arrayBuffer);
+
+  // ДАЁМ OpenAI ИМЕННО БАЙТЫ, а не строку  избегаем ByteString-ошибок
+  const file = await (OpenAI as any).toFile(uint8, "call-audio.webm");
+
+  const transcription = await (openai as any).audio.transcriptions.create({
+    file,
+    model: "gpt-4o-mini-transcribe",
+    response_format: "text",
+    language: "ru",
+  });
+
+  if (typeof transcription === "string") {
+    return transcription;
+  }
+
+  if (transcription && typeof (transcription as any).text === "string") {
+    return (transcription as any).text as string;
+  }
+
+  throw new Error("Unexpected transcription response from OpenAI");
+}
+
+// 2) Анализ текста звонка через LLM
 async function analyzeTranscript(transcript: string): Promise<CallAnalysisResult> {
   if (!transcript || !transcript.trim()) {
     return {
@@ -27,7 +86,7 @@ async function analyzeTranscript(transcript: string): Promise<CallAnalysisResult
   }
 
   const prompt = `
-Ты AI-аналитик звонков для sales-команд. Твоя задача  оценить разговор менеджера с клиентом.
+Ты  AI-аналитик звонков для sales-команд. Твоя задача  оценить разговор менеджера с клиентом.
 
 Ниже транскрипт звонка (на русском или казахском). Твоя задача  вернуть СТРОГО один JSON без лишнего текста с полями:
 - score: целое число от 0 до 100 (качество работы менеджера)
@@ -38,8 +97,8 @@ async function analyzeTranscript(transcript: string): Promise<CallAnalysisResult
   - offer_presentation
   - objections_handling
   - closing_attempt
-- insights: массив коротких строк с ключевыми выводами (2-5 штук)
-- recommendations: массив коротких советов для менеджера (2-5 штук)
+- insights: массив коротких строк с ключевыми выводами (25 штук)
+- recommendations: массив коротких советов для менеджера (25 штук)
 
 Ответ будь ТОЛЬКО в формате JSON.
 
@@ -54,7 +113,7 @@ async function analyzeTranscript(transcript: string): Promise<CallAnalysisResult
       {
         role: "system",
         content:
-          "Ты аналитик продаж. Говори кратко и строго в JSON. Не добавляй никакого пояснительного текста.",
+          "Ты  аналитик продаж. Говори кратко и строго в JSON. Не добавляй никакого пояснительного текста.",
       },
       {
         role: "user",
@@ -86,12 +145,11 @@ async function analyzeTranscript(transcript: string): Promise<CallAnalysisResult
 }
 
 /**
- * Основная функция обработки одного звонка:
- * 1) достаём звонок
- * 2) ставим PROCESSING
- * 3) делаем "транскрипт" (stub)
- * 4) анализируем
- * 5) сохраняем DONE + поля
+ * Основная функция обработки одного звонка.
+ * 1) достаём звонок из БД
+ * 2) тянем и транскрибируем аудио
+ * 3) прогоняем через LLM-анализ
+ * 4) сохраняем результат в БД
  */
 export async function processCall(callId: string): Promise<void> {
   const call = await db.call.findUnique({
@@ -102,12 +160,11 @@ export async function processCall(callId: string): Promise<void> {
     throw new Error(`Call not found: ${callId}`);
   }
 
-  // уже обработан  ничего не делаем
-  if (call.status === CallStatus.DONE) {
-    return;
+  if (!call.audioUrl) {
+    throw new Error(`Call ${callId} has no audioUrl`);
   }
 
-  // помечаем как PROCESSING, чтобы не схватить повторно
+  // помечаем звонок как PROCESSING, чтобы не схватить его повторно
   if (call.status !== CallStatus.PROCESSING) {
     await db.call.update({
       where: { id: callId },
