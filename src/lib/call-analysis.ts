@@ -10,7 +10,7 @@ type CallAnalysisResult = {
   meta: Record<string, unknown>;
 };
 
-//  ВРЕМЕННАЯ транскрибация  без реального аудио
+//  ВРЕМЕННАЯ транскрибация  без реального аудио, просто заглушка
 async function transcribeAudioFromUrl(audioUrl: string | null | undefined): Promise<string> {
   return "STUB: транскрибация отключена. Это демо-текст для анализа звонка. Реальная расшифровка аудио будет подключена позже.";
 }
@@ -107,7 +107,7 @@ export async function processCall(callId: string): Promise<void> {
     return;
   }
 
-  // помечаем как PROCESSING
+  // помечаем как PROCESSING, чтобы не схватить повторно
   if (call.status !== CallStatus.PROCESSING) {
     await db.call.update({
       where: { id: callId },
