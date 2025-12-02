@@ -47,18 +47,17 @@ model Company {
 
   name                String
   phone               String?
-  onboardingCompleted Boolean  @default(false) // 👈 НОВОЕ ПОЛЕ
+  onboardingCompleted Boolean  @default(false)
 
-  users            User[]
-  managers         Manager[]
-  calls            Call[]
-  subscriptions    Subscription[]
-  integrations     Integration[]
-  paymentRequests  PaymentRequest[]
+  users           User[]
+  managers        Manager[]
+  calls           Call[]
+  subscriptions   Subscription[]
+  integrations    Integration[]
+  paymentRequests PaymentRequest[]
 
   @@index([name])
 }
-
 
 model User {
   id        String   @id @default(cuid())
