@@ -1,11 +1,11 @@
 {
   "crons": [
     {
-      "path": "/api/cron/sync-calls?companyId=cmiaegnvc0000jm049lqz9flr&secret=0608506db2bfa42682795397b1d3700b6414b43d2456a4be20081d8238b4d9c8",
+      "path": "/api/cron/sync-calls?companyId=cmiaegnvc0000jm049lqz9flr&secret=callx-cron-2024-super",
       "schedule": "0 2 * * *"
     },
     {
-      "path": "/api/cron/process-calls?secret=0608506db2bfa42682795397b1d3700b6414b43d2456a4be20081d8238b4d9c8",
+      "path": "/api/cron/process-calls?secret=callx-cron-2024-super",
       "schedule": "30 2 * * *"
     }
   ]

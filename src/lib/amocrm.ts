@@ -8,7 +8,7 @@ import {
 const AMO_STUB_MODE = process.env.AMO_STUB_MODE === "true";
 
 export type AmoIntegrationConfig = {
-  domain: string; // arenasunset2.amocrm.ru
+  domain: string; // amoCRM domain  
   apiDomain?: string | null;
   accessToken: string;
   refreshToken?: string | null;
