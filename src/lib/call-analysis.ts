@@ -1,6 +1,7 @@
-﻿import { db } from "./db";
+﻿import { db } from "@/lib/db";
 import { CallStatus } from "@prisma/client";
 import { getOpenAIClient } from "./openai";
+import { transcribeAudioFromUrl } from "./transcription";
 
 const openai = getOpenAIClient();
 
@@ -11,7 +12,7 @@ type CallAnalysisResult = {
 };
 
 const STUB_TRANSCRIPT =
-  "STUB: транскрибация пока не подключена. Это демо-текст для анализа звонка. Реальная расшифровка аудио будет добавлена позже, но оценка и разбор скрипта уже работают.";
+  "STUB: транскрибация аудио недоступна или файл повреждён. Это демо-текст для анализа. Реальная транскрибация будет добавлена позже, но оценка и разбор скрипта уже работают.";
 
 export async function analyzeTranscript(
   transcript: string
@@ -38,8 +39,8 @@ export async function analyzeTranscript(
   - offer_presentation
   - objections_handling
   - closing_attempt
-- insights: массив коротких строк с ключевыми выводами (25 штук)
-- recommendations: массив коротких советов для менеджера (25 штук)
+- insights: массив коротких строк с ключевыми выводами (до 25 штук)
+- recommendations: массив коротких советов для менеджера (до 25 штук)
 
 Ответ будь ТОЛЬКО в формате JSON.
 
@@ -71,7 +72,7 @@ export async function analyzeTranscript(
   let parsed: any;
   try {
     parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-  } catch (err) {
+  } catch {
     throw new Error("Failed to parse JSON from OpenAI response");
   }
 
@@ -97,35 +98,47 @@ export async function analyzeTranscript(
 /**
  * Основная функция обработки одного звонка.
  * 1) достаём звонок из БД
- * 2) берём транскрипт (если нет  используем STUB_TRANSCRIPT)
- * 3) прогоняем через LLM-анализ
- * 4) сохраняем результат в БД
+ * 2) если нет транскрипта, но есть audioUrl  пробуем транскрибацию
+ *    (при ошибке просто логируем и идём дальше)
+ * 3) если всё ещё нет транскрипта  используем STUB
+ * 4) анализируем текст и обновляем запись
  */
-export async function processCall(callId: string): Promise<void> {
+export async function processCall(callId: string) {
   const call = await db.call.findUnique({
     where: { id: callId },
   });
 
   if (!call) {
-    throw new Error(`Call not found: ${callId}`);
+    throw new Error(`Call ${callId} not found`);
   }
 
-  // никакой зависимости от audioUrl  работаем даже без него
-  const transcript =
-    call.transcript && call.transcript.trim().length > 0
-      ? call.transcript
-      : STUB_TRANSCRIPT;
+  let transcript = call.transcript ?? "";
 
-  // помечаем звонок как PROCESSING, чтобы не схватить его повторно
-  if (call.status !== CallStatus.PROCESSING) {
-    await db.call.update({
-      where: { id: callId },
-      data: {
-        status: CallStatus.PROCESSING,
-      },
-    });
+  // 1) Если нет транскрипта, но есть audioUrl  пробуем реальную транскрибацию
+  if (!transcript && call.audioUrl) {
+    try {
+      transcript = await transcribeAudioFromUrl(call.audioUrl);
+    } catch (err) {
+      console.error("[processCall] transcription error", err);
+      // НЕ ставим ERROR-статус, просто логируем в meta
+      await db.call.update({
+        where: { id: callId },
+        data: {
+          meta: {
+            ...(call.meta as any),
+            transcriptionError: String(err),
+          },
+        },
+      });
+    }
   }
 
+  // 2) Если всё ещё нет текста  fallback на STUB
+  if (!transcript) {
+    transcript = STUB_TRANSCRIPT;
+  }
+
+  // 3) Анализ текста звонка
   const analysis = await analyzeTranscript(transcript);
 
   await db.call.update({

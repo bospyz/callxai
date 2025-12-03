@@ -99,3 +99,26 @@ export async function retryFailedCalls(max?: number) {
     retried: failedCalls.length,
   };
 }
+/**
+ * Ретраим все звонки в статусе ERROR по всем компаниям.
+ */
+export async function retryAllFailedCalls() {
+  const failed = await db.call.findMany({
+    where: {
+      status: CallStatus.ERROR,
+    },
+    select: { id: true },
+  });
+
+  for (const c of failed) {
+    await db.call.update({
+      where: { id: c.id },
+      data: {
+        status: CallStatus.NEW,
+      },
+    });
+    await enqueueCallProcessing({ callId: c.id });
+  }
+
+  return { retried: failed.length };
+}

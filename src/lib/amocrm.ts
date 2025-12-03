@@ -8,7 +8,7 @@ import {
 const AMO_STUB_MODE = process.env.AMO_STUB_MODE === "true";
 
 export type AmoIntegrationConfig = {
-  domain: string; // amoCRM domain  
+  domain: string; // amoCRM domain
   apiDomain?: string | null;
   accessToken: string;
   refreshToken?: string | null;
@@ -74,7 +74,6 @@ async function amoFetch(
       Authorization: `Bearer ${config.accessToken}`,
       "Content-Type": "application/json",
     },
-    // можно добавить таймауты/agent при желании
   });
 
   if (res.status === 401) {
@@ -106,7 +105,6 @@ async function fetchRecentCallsFromAmo(
     raw: any;
   }[]
 > {
-  // Упрощённый пример: тянем notes типа звонков
   const result = await amoFetch(
     config,
     `/api/v4/leads/notes?note_type=10&limit=${limit}`
@@ -185,9 +183,12 @@ export async function syncAmoRecentCalls(opts: {
       throw new Error("amoCRM integration not found or not configured");
     }
 
-    // Даже если нет интеграции — в режиме заглушки всё равно создаём тестовые звонки
     const stubItems = buildStubItems(limit);
-    const created = await saveItemsAsCalls(companyId, stubItems, "amocrm-stub-no-integration");
+    const created = await saveItemsAsCalls(
+      companyId,
+      stubItems,
+      "amocrm-stub-no-integration"
+    );
 
     return {
       ok: true,
@@ -208,20 +209,17 @@ export async function syncAmoRecentCalls(opts: {
     | null = null;
 
   if (AMO_STUB_MODE) {
-    // вообще не ходим в amo, сразу генерим заглушки
     items = buildStubItems(limit);
   } else {
-    // реальный запрос в amo
     items = await fetchRecentCallsFromAmo(amo.config, limit);
   }
 
-  let created = await saveItemsAsCalls(
+  const created = await saveItemsAsCalls(
     companyId,
     items,
     AMO_STUB_MODE ? "amocrm-stub" : "amocrm"
   );
 
-  // обновляем lastSyncAt (для реальной интеграции)
   try {
     const newConfig: AmoIntegrationConfig = {
       ...amo.config,
@@ -230,7 +228,7 @@ export async function syncAmoRecentCalls(opts: {
 
     await db.integration.update({
       where: { id: amo.id },
-      data: { config: newConfig },
+      data: { config: newConfig as any },
     });
   } catch (err) {
     console.error("Failed to update amo integration config", err);
@@ -243,6 +241,77 @@ export async function syncAmoRecentCalls(opts: {
       ? `STUB: создано ${created} тестовых звонков (режим заглушки amoCRM).`
       : `Импортированы последние ${limit} звонков из amoCRM. Новых записей: ${created}.`,
   };
+}
+
+/**
+ * Обновление токенов amoCRM для всех включённых интеграций.
+ */
+export async function refreshAllAmoTokens() {
+  const integrations = await db.integration.findMany({
+    where: {
+      type: IntegrationType.AMOCRM,
+      enabled: true,
+    },
+  });
+
+  for (const integration of integrations) {
+    const config = integration.config as any as AmoIntegrationConfig;
+
+    if (!config.refreshToken || !config.clientId || !config.clientSecret) {
+      console.warn(
+        "[amo] skip refresh for integration without refreshToken/clientId/clientSecret",
+        integration.id
+      );
+      continue;
+    }
+
+    const domain = config.apiDomain || config.domain;
+    const url = `https://${domain}/oauth2/access_token`;
+
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_id: config.clientId,
+          client_secret: config.clientSecret,
+          grant_type: "refresh_token",
+          refresh_token: config.refreshToken,
+          redirect_uri: config.redirectUri,
+        }),
+      });
+
+      if (!res.ok) {
+        console.error(
+          "[amo] token refresh failed",
+          integration.id,
+          res.status,
+          res.statusText
+        );
+        continue;
+      }
+
+      const data = (await res.json()) as any;
+
+      const updatedConfig: AmoIntegrationConfig = {
+        ...config,
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token ?? config.refreshToken,
+        tokenExpiresAt: data.expires_in
+          ? new Date(Date.now() + data.expires_in * 1000).toISOString()
+          : config.tokenExpiresAt ?? null,
+      };
+
+      await db.integration.update({
+        where: { id: integration.id },
+        data: { config: updatedConfig as any },
+      });
+
+      console.log("[amo] token refreshed for integration", integration.id);
+    } catch (err) {
+      console.error("[amo] token refresh error", integration.id, err);
+    }
+  }
 }
 
 // Вспомогательная функция сохранения звонков в БД с дедупликацией по externalId

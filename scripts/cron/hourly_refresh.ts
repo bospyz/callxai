@@ -1,24 +1,24 @@
-﻿/**
- * Ежечасный cron-скрипт (заглушка).
+﻿import { refreshAllAmoTokens } from "@/lib/amocrm";
+import { retryAllFailedCalls } from "@/lib/workers/retry-queue";
+
+/**
+ * Ежечасный cron-скрипт.
  *
- * TODO (позже):
- *  - пройтись по всем компаниям
- *  - обновить токены amoCRM (refreshToken -> accessToken)
- *  - запустить retry для звонков в статусе ERROR
- *  - подготовить ежедневные агрегаты/отчёты
+ * - обновляет токены amoCRM
+ * - перезапускает обработку звонков в статусе ERROR
  */
-
 async function main() {
-  console.log("[Cron] hourly_refresh stub started");
+  console.log("[Cron] hourly_refresh started");
 
-  // TODO:
-  // import { refreshAllAmoTokens } from "@/lib/amocrm";
-  // await refreshAllAmoTokens();
-  //
-  // import { retryFailedCalls } from "@/lib/workers/retry-queue";
-  // await retryFailedCalls();
+  await refreshAllAmoTokens();
 
-  console.log("[Cron] hourly_refresh stub finished");
+  try {
+    await retryAllFailedCalls();
+  } catch (err) {
+    console.error("[Cron] retryAllFailedCalls error", err);
+  }
+
+  console.log("[Cron] hourly_refresh finished");
 }
 
 main().catch((err) => {
