@@ -67,9 +67,9 @@ export default function Landing() {
             </video>
 
             {/* верхний градиент */}
-            <div className="absolute top-0 inset-x-0 h-[45%] bg-gradient-to-b from-black/85 via-black/50 to-transparent pointer-events-none" />
+            <div className="absolute top-0 inset-x-0 h-[45%] bg-gradient-to-b from-black/95 via-black/70 to-transparent pointer-events-none" />
             {/* нижний градиент */}
-            <div className="absolute bottom-0 inset-x-0 h-[55%] bg-gradient-to-t from-[#05000D] via-black/70 to-transparent pointer-events-none" />
+            <div className="absolute bottom-0 inset-x-0 h-[55%] bg-gradient-to-t from-[#05000D] via-black/80 to-transparent pointer-events-none" />
           </div>
 
           {/* Внутренний контейнер */}
