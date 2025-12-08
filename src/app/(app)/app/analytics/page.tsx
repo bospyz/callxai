@@ -46,12 +46,13 @@ export default function AnalyticsPage() {
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
+    let cancelled = false;
+
     async function load() {
       try {
         setLoading(true);
         setError(null);
 
-        // 🔌 тянем сводку + сырые звонки
         const [summaryRes, callsRes] = await Promise.all([
           fetch("/api/analytics/summary?days=30"),
           fetch("/api/calls?period=30d"),
@@ -67,31 +68,39 @@ export default function AnalyticsPage() {
         const summaryData = await summaryRes.json();
         const callsData = await callsRes.json();
 
+        if (cancelled) return;
+
         setAnalytics(summaryData.analytics ?? null);
         setCalls(Array.isArray(callsData.calls) ? callsData.calls : []);
       } catch (err: any) {
         console.error("[Analytics] load error", err);
-        setError(err?.message ?? "Ошибка загрузки аналитики");
+        if (!cancelled) {
+          setError(err?.message ?? "Ошибка загрузки аналитики");
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
 
     load();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const withAnalytics = !loading && !error && (analytics || calls.length > 0);
+  const hasAnyData = !!analytics || calls.length > 0;
+  const withAnalytics = !loading && !error && hasAnyData;
 
   // ===== базовые метрики (если сводка пропала — считаем по звонкам) =====
   const total =
-    analytics?.totalCalls ??
-    (calls.length > 0 ? calls.length : 0);
+    analytics?.totalCalls ?? (calls.length > 0 ? calls.length : 0);
 
   const done =
     analytics?.doneCalls ??
     calls.filter((c) => c.status === "DONE").length;
 
-  const errors =
+  const errorsCount =
     analytics?.errorCalls ??
     calls.filter(
       (c) => c.status === "FAILED" || c.status === "ERROR"
@@ -118,7 +127,8 @@ export default function AnalyticsPage() {
     })();
 
   const doneRate = total > 0 ? Math.round((done * 100) / total) : 0;
-  const errorRate = total > 0 ? Math.round((errors * 100) / total) : 0;
+  const errorRate =
+    total > 0 ? Math.round((errorsCount * 100) / total) : 0;
   const queueRate =
     total > 0 ? Math.round((processing * 100) / total) : 0;
 
@@ -218,12 +228,12 @@ export default function AnalyticsPage() {
 
   return (
     <main className="min-h-screen w-full bg-black text-neutral-50">
-      {/* шире контейнер: почти на всю ширину */}
-      <div className="mx-auto w-full max-w-[1500px] px-4 sm:px-8 lg:px-10 xl:px-16 pb-10 pt-7 space-y-7">
+    <div className="mx-auto w-full max-w-none px-4 sm:px-6 lg:px-10 xl:px-16 py-8 sm:py-10 lg:py-12 space-y-7">
+
         {/* HEADER */}
         <header className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div className="space-y-1.5">
-            <div className="inline-flex items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950/90 px-3.5 py-1.5 text-[11px] text-neutral-400 shadow-[0_0_26px_rgba(34,197,94,0.25)]">
+            <div className="inline-flex items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950/90 px-3.5 py-1.5 text-[11px] text-neutral-400 shadow-[0_0_22px_rgba(34,197,94,0.22)]">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
               <span>CALLX · ANALYTICS</span>
               <span className="hidden sm:inline text-[10px] text-neutral-500">
@@ -260,7 +270,7 @@ export default function AnalyticsPage() {
           <motion.div
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
-            className="rounded-3xl border border-neutral-900 bg-neutral-950/90 px-5 py-6 text-sm text-neutral-300 shadow-[0_22px_60px_rgba(0,0,0,0.9)]"
+            className="rounded-3xl border border-neutral-900 bg-neutral-950/90 px-5 py-6 text-sm text-neutral-300 shadow-[0_18px_40px_rgba(0,0,0,0.85)]"
           >
             <div className="flex items-center gap-3">
               <div className="h-9 w-9 rounded-2xl bg-neutral-900 border border-neutral-800 animate-pulse" />
@@ -280,13 +290,32 @@ export default function AnalyticsPage() {
           <motion.div
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
-            className="rounded-2xl border border-red-500/40 bg-red-950/60 p-4 text-sm text-red-100 shadow-[0_18px_50px_rgba(0,0,0,0.9)]"
+            className="rounded-2xl border border-red-500/40 bg-red-950/60 p-4 text-sm text-red-100 shadow-[0_16px_40px_rgba(0,0,0,0.9)]"
           >
             <div className="mb-1 flex items-center gap-2 font-semibold">
               <span className="h-2 w-2 rounded-full bg-red-400" />
               <span>Ошибка загрузки аналитики</span>
             </div>
             <div className="text-[13px]">{error}</div>
+          </motion.div>
+        )}
+
+        {/* НЕТ ДАННЫХ */}
+        {!loading && !error && !hasAnyData && (
+          <motion.div
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="rounded-2xl border border-neutral-800 bg-neutral-950/90 p-5 text-sm text-neutral-300"
+          >
+            <h2 className="text-base font-medium mb-1.5">
+              Пока нет данных для аналитики
+            </h2>
+            <p className="text-[12px] text-neutral-500 max-w-xl">
+              Подключи AmoCRM / Bitrix24 в разделе{" "}
+              <span className="text-neutral-100">«Интеграции»</span>, налей
+              первые звонки — и здесь появятся графики, статистика по
+              менеджерам и инсайты по отделу.
+            </p>
           </motion.div>
         )}
 
@@ -322,21 +351,21 @@ export default function AnalyticsPage() {
               />
               <MetricCard
                 label="Ошибки анализа"
-                value={errors}
+                value={errorsCount}
                 delta={errorRate}
                 hint="ERROR — проблемы с аудио или интеграцией"
                 tone="danger"
               />
             </motion.section>
 
-            {/* SECOND ROW: качество отдела + полоски статусов */}
+            {/* SECOND ROW: качество отдела + статусы */}
             <section className="grid gap-4 lg:grid-cols-[1.5fr,1.1fr]">
               {/* средний score */}
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.05 }}
-                className="relative overflow-hidden rounded-3xl border border-neutral-900 bg-neutral-950/95 p-5 sm:p-6 shadow-[0_26px_80px_rgba(0,0,0,0.95)]"
+                className="relative overflow-hidden rounded-3xl border border-neutral-900 bg-neutral-950/95 p-5 sm:p-6 shadow-[0_20px_55px_rgba(0,0,0,0.9)]"
               >
                 <div className="pointer-events-none absolute inset-0 opacity-[0.2] bg-[radial-gradient(circle_at_1px_1px,#ffffff22_1px,transparent_0)] [background-size:18px_18px]" />
                 <div className="relative z-10 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -399,7 +428,7 @@ export default function AnalyticsPage() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.1 }}
-                className="rounded-3xl border border-neutral-900 bg-neutral-950/95 p-5 sm:p-6 shadow-[0_26px_80px_rgba(0,0,0,0.95)] flex flex-col gap-4"
+                className="rounded-3xl border border-neutral-900 bg-neutral-950/95 p-5 sm:p-6 flex flex-col gap-4 shadow-[0_20px_55px_rgba(0,0,0,0.9)]"
               >
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-medium text-neutral-100">
@@ -421,7 +450,7 @@ export default function AnalyticsPage() {
                 />
                 <StatusRow
                   label="ERROR — проблемы"
-                  count={errors}
+                  count={errorsCount}
                   total={total}
                   tone="danger"
                 />
@@ -442,7 +471,7 @@ export default function AnalyticsPage() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.15 }}
-                className="rounded-3xl border border-neutral-900 bg-neutral-950/95 p-5 sm:p-6 shadow-[0_26px_80px_rgba(0,0,0,0.95)] flex flex-col gap-4"
+                className="rounded-3xl border border-neutral-900 bg-neutral-950/95 p-5 sm:p-6 flex flex-col gap-4 shadow-[0_20px_55px_rgba(0,0,0,0.9)]"
               >
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-medium text-neutral-100">
@@ -550,7 +579,7 @@ function MetricCard(props: {
 
   return (
     <div
-      className={`rounded-2xl border px-4 py-4 sm:px-5 sm:py-5 shadow-[0_20px_55px_rgba(0,0,0,0.85)] ${toneClasses[tone]}`}
+      className={`rounded-2xl border px-4 py-4 sm:px-5 sm:py-5 shadow-[0_16px_45px_rgba(0,0,0,0.85)] ${toneClasses[tone]}`}
     >
       <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.18em] text-neutral-500">
         {props.label}
@@ -628,7 +657,7 @@ function DailyChartCard({ daily }: { daily: DailyPoint[] }) {
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: 0.12 }}
-      className="rounded-3xl border border-neutral-900 bg-neutral-950/95 p-5 sm:p-6 shadow-[0_26px_80px_rgba(0,0,0,0.95)] flex flex-col"
+      className="rounded-3xl border border-neutral-900 bg-neutral-950/95 p-5 sm:p-6 flex flex-col shadow-[0_20px_55px_rgba(0,0,0,0.9)]"
     >
       <div className="mb-3 flex items-center justify-between gap-2">
         <h2 className="text-sm font-medium text-neutral-100">
@@ -670,7 +699,7 @@ function DailyChartCard({ daily }: { daily: DailyPoint[] }) {
                       style={{ height: `${height || 3}%` }}
                     />
                     <div
-                      className="absolute bottom-0 w-[60%] rounded-t-full bg-gradient-to-t from-emerald-400 to-lime-300 shadow-[0_0_14px_rgba(74,222,128,0.7)]"
+                      className="absolute bottom-0 w-[60%] rounded-t-full bg-gradient-to-t from-emerald-400 to-lime-300 shadow-[0_0_12px_rgba(74,222,128,0.7)]"
                       style={{ height: `${doneHeight || 0}%` }}
                     />
                   </div>
@@ -710,7 +739,7 @@ function ManagerHighlight(props: {
   return (
     <div className="rounded-2xl border border-neutral-900 bg-neutral-950/90 p-4 flex flex-col gap-2">
       <div className="flex items-center justify-between">
-        <span className="text-[11px] uppercase tracking-[0.18em] text-neutral-500">
+        <span className="text-[11px] uppercase tracking-[0.18ем] text-neutral-500">
           {props.title}
         </span>
         <span className="inline-flex items-center rounded-full bg-neutral-900 px-2 py-0.5 text-[10px] text-neutral-300">
@@ -748,26 +777,28 @@ function ManagerTable({ managers }: { managers: ManagerPoint[] }) {
         <div>Средний score</div>
       </div>
 
-      {managers.map((m) => (
-        <div
-          key={m.managerId}
-          className="grid grid-cols-[1.4fr_0.7fr_0.7fr_0.7fr] items-center px-3 sm:px-4 py-2.5 border-t border-neutral-900 text-neutral-200 hover:bg-neutral-900/70 transition-colors"
-        >
-          <div className="flex items-center gap-2">
-            <div className="h-7 w-7 rounded-full bg-neutral-900 border border-neutral-800 flex items-center justify-center text-[11px] text-neutral-200">
-              {m.name?.[0]?.toUpperCase() || "M"}
+      <div className="max-h-64 w-full overflow-auto">
+        {managers.map((m) => (
+          <div
+            key={m.managerId}
+            className="grid grid-cols-[1.4fr_0.7fr_0.7fr_0.7fr] items-center px-3 sm:px-4 py-2.5 border-t border-neutral-900 text-neutral-200 hover:bg-neutral-900/70 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <div className="h-7 w-7 rounded-full bg-neutral-900 border border-neutral-800 flex items-center justify-center text-[11px] text-neutral-200">
+                {m.name?.[0]?.toUpperCase() || "M"}
+              </div>
+              <span className="truncate">{m.name}</span>
             </div>
-            <span className="truncate">{m.name}</span>
+            <div>{m.total}</div>
+            <div>{m.done}</div>
+            <div>
+              {typeof m.avgScore === "number"
+                ? `${m.avgScore.toFixed(0)}/100`
+                : "—"}
+            </div>
           </div>
-          <div>{m.total}</div>
-          <div>{m.done}</div>
-          <div>
-            {typeof m.avgScore === "number"
-              ? `${m.avgScore.toFixed(0)}/100`
-              : "—"}
-          </div>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }
@@ -776,8 +807,10 @@ function ManagerTable({ managers }: { managers: ManagerPoint[] }) {
 
 function InsightCard(props: { title: string; points: string[] }) {
   return (
-    <div className="rounded-3xl border border-neutral-900 bg-neutral-950/95 p-5 sm:p-6 shadow-[0_22px_70px_rgba(0,0,0,0.95)] flex flex-col gap-3">
-      <h3 className="text-sm font-medium text-neutral-100">{props.title}</h3>
+    <div className="rounded-3xl border border-neutral-900 bg-neutral-950/95 p-5 sm:p-6 flex flex-col gap-3 shadow-[0_18px_50px_rgba(0,0,0,0.9)]">
+      <h3 className="text-sm font-medium text-neutral-100">
+        {props.title}
+      </h3>
       <ul className="space-y-2 text-[11px] sm:text-[12px] text-neutral-400">
         {props.points.map((p, idx) => (
           <li key={idx} className="flex gap-2">

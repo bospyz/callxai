@@ -125,7 +125,7 @@ export default function AppDashboardPage() {
 
   const topManagers = managerStats.slice(0, 5);
 
-  // Немного доп. агрегаций для советов
+  // Доп. агрегации
   const failedCalls = calls.filter((c) => c.status === "FAILED").length;
   const newCalls = calls.filter((c) => c.status === "NEW").length;
   const processingCalls = calls.filter(
@@ -188,7 +188,6 @@ export default function AppDashboardPage() {
 
   const insightSlides: InsightSlide[] = useMemo(() => {
     if (!hasCalls) {
-      // Плейсхолдер до интеграции / первых звонков
       return [
         {
           id: "empty-1",
@@ -229,7 +228,6 @@ export default function AppDashboardPage() {
       ];
     }
 
-    // Когда звонки уже есть — реальные инсайты
     const slides: InsightSlide[] = [];
 
     if (bestByVolume) {
@@ -382,38 +380,37 @@ export default function AppDashboardPage() {
 
   return (
     <main className="min-h-screen w-full bg-black text-neutral-50">
-      <div className="mx-auto flex w-full flex-col gap-8 px-4 sm:px-6 lg:px-10 xl:px-16 py-8 sm:py-10 lg:py-12">
+      {/* pt/pb — чтобы не залезать под мобильный хедер и нижнюю навигацию */}
+      <div className="mx-auto flex w-full flex-col gap-8 px-3 sm:px-6 lg:px-10 xl:px-16 pt-4 sm:pt-6 lg:pt-8 pb-24 sm:pb-12">
         {/* HEADER */}
-        <header className="flex flex-col gap-4 lg:gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <header className="flex flex-col gap-3 lg:gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div className="space-y-3">
-            <div className="inline-flex items-center gap-2 rounded-full border border-neutral-800/80 bg-neutral-950/90 px-3.5 py-1.5 text-[11px] text-neutral-400 shadow-[0_0_30px_rgba(34,197,94,0.15)]">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              <span>Главный дашборд CallX</span>
-              <span className="text-[10px] text-neutral-500">
+            <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-neutral-800/80 bg-neutral-950/90 px-3 py-1.5 text-[10px] sm:text-[11px] text-neutral-400 shadow-[0_0_30px_rgba(34,197,94,0.15)]">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
+              <span className="truncate">Главный дашборд CallX</span>
+              <span className="hidden sm:inline text-[10px] text-neutral-500">
                 live-обновление каждые несколько минут
               </span>
             </div>
-            <h1 className="text-2xl sm:text-3xl xl:text-[32px] font-semibold tracking-tight">
+            <h1 className="text-xl sm:text-3xl xl:text-[32px] font-semibold tracking-tight">
               Обзор отдела продаж{" "}
               <span className="text-neutral-500">
-                (
-                {PERIOD_OPTIONS.find((p) => p.value === period)?.label}
-                )
+                ({PERIOD_OPTIONS.find((p) => p.value === period)?.label})
               </span>
             </h1>
-            <p className="text-sm text-neutral-400 max-w-2xl">
+            <p className="text-[12px] sm:text-sm text-neutral-400 max-w-2xl">
               Сколько звонков сделали, сколько CallX успел разобрать и какой
               средний балл по отделу. Всё в одном экране — без отчётов в Excel.
             </p>
           </div>
 
-          <div className="flex flex-col items-end gap-3 text-xs text-neutral-400">
-            <div className="flex flex-wrap gap-1.5 justify-end">
+          <div className="flex flex-col items-stretch sm:items-end gap-2 sm:gap-3 text-[11px] sm:text-xs text-neutral-400">
+            <div className="flex flex-wrap gap-1.5 justify-start sm:justify-end">
               {PERIOD_OPTIONS.map((opt) => (
                 <button
                   key={opt.value}
                   onClick={() => setPeriod(opt.value)}
-                  className={`rounded-full px-3.5 py-1.5 border transition text-[11px] ${
+                  className={`rounded-full px-3 py-1.5 border transition text-[11px] ${
                     period === opt.value
                       ? "bg-gradient-to-r from-emerald-400 to-lime-300 text-black border-transparent shadow-[0_0_18px_rgba(74,222,128,0.7)]"
                       : "bg-neutral-950 text-neutral-300 border-neutral-800 hover:border-neutral-600 hover:text-neutral-100"
@@ -427,7 +424,7 @@ export default function AppDashboardPage() {
             <button
               onClick={handleExportExcel}
               disabled={exportLoading}
-              className="mt-1 inline-flex items-center gap-2 rounded-full border border-neutral-700 bg-neutral-950 px-3.5 py-1.5 text-[11px] text-neutral-200 hover:border-emerald-400 hover:text-white hover:bg-neutral-900 transition disabled:opacity-60 disabled:cursor-not-allowed"
+              className="mt-1 inline-flex items-center justify-center gap-2 rounded-full border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-[11px] text-neutral-200 hover:border-emerald-400 hover:text-white hover:bg-neutral-900 transition disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {exportLoading ? "Готовим Excel…" : "Скачать Excel отчёт"}
             </button>
@@ -439,10 +436,10 @@ export default function AppDashboardPage() {
           <motion.div
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
-            className="rounded-2xl border border-neutral-800 bg-neutral-950/95 px-4 py-6 text-sm text-neutral-300 shadow-[0_18px_50px_rgba(0,0,0,0.85)]"
+            className="rounded-2xl border border-neutral-800 bg-neutral-950/95 px-4 py-4 sm:py-6 text-sm text-neutral-300 shadow-[0_18px_50px_rgba(0,0,0,0.85)]"
           >
             <div className="flex items-center gap-3">
-              <div className="h-10 w-10 rounded-2xl bg-neutral-900 border border-neutral-800 animate-pulse" />
+              <div className="h-9 w-9 rounded-2xl bg-neutral-900 border border-neutral-800 animate-pulse" />
               <div className="space-y-1">
                 <p className="text-sm">Загружаем данные по звонкам…</p>
                 <p className="text-[11px] text-neutral-500">
@@ -546,15 +543,15 @@ export default function AppDashboardPage() {
               </div>
             </motion.div>
 
-            {/* ---------- БОЛЬШАЯ СТОРИС-КАРТОЧКА НА ПОЛ-ЭКРАНА ---------- */}
+            {/* ---------- БОЛЬШАЯ СТОРИС-КАРТОЧКА ---------- */}
             {currentSlide && (
               <section className="mt-6 space-y-4">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-neutral-500">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                  <h2 className="text-xs sm:text-sm font-semibold uppercase tracking-[0.16em] text-neutral-500">
                     Инсайты CallX
                   </h2>
                   {!hasCalls && (
-                    <div className="flex items-center gap-1 text-[11px] text-neutral-500">
+                    <div className="flex items-center gap-1 text-[10px] sm:text-[11px] text-neutral-500">
                       <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-neutral-900 border border-neutral-800 text-[9px] opacity-70">
                         🔑
                       </span>
@@ -569,7 +566,7 @@ export default function AppDashboardPage() {
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.25 }}
-                    className="w-full min-h-[45vh] max-h-[520px] rounded-3xl border border-neutral-800/80 bg-neutral-950/95 shadow-[0_40px_120px_rgba(0,0,0,0.95)] overflow-hidden relative flex flex-col justify-between p-6 sm:p-8"
+                    className="w-full min-h-[320px] sm:min-h-[45vh] max-h-[520px] rounded-3xl border border-neutral-800/80 bg-neutral-950/95 shadow-[0_40px_120px_rgba(0,0,0,0.95)] overflow-hidden relative flex flex-col justify-between p-5 sm:p-8"
                   >
                     {/* Градиентный фон по тону */}
                     <div
@@ -584,14 +581,14 @@ export default function AppDashboardPage() {
                     {/* Лёгкая сетка поверх */}
                     <div className="pointer-events-none absolute inset-0 opacity-[0.16] bg-[radial-gradient(circle_at_1px_1px,#ffffff33_1px,transparent_0)] [background-size:18px_18px]" />
 
-                    {/* Верхняя часть: бейдж + заголовки */}
+                    {/* Верхняя часть */}
                     <div className="relative z-10 flex flex-col gap-3">
                       <div className="inline-flex items-center gap-2 text-[11px] text-neutral-300">
                         <span className="rounded-full border border-neutral-700/80 bg-black/70 px-2.5 py-0.5 backdrop-blur">
                           {currentSlide.badge}
                         </span>
                         {hasCalls ? (
-                          <span className="flex items-center gap-1 text-[10px] text-emerald-300">
+                          <span className="hidden sm:flex items-center gap-1 text-[10px] text-emerald-300">
                             <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
                             live data
                           </span>
@@ -602,29 +599,28 @@ export default function AppDashboardPage() {
                         )}
                       </div>
 
-                      <h3 className="text-2xl sm:text-3xl font-semibold text-neutral-50 leading-tight">
+                      <h3 className="text-xl sm:text-2xl md:text-3xl font-semibold text-neutral-50 leading-tight">
                         {currentSlide.title}
                       </h3>
-                      <p className="text-sm sm:text-[15px] text-neutral-200 max-w-xl">
+                      <p className="text-[13px] sm:text-[15px] text-neutral-200 max-w-xl">
                         {currentSlide.subtitle}
                       </p>
                     </div>
 
-                    {/* Нижняя часть: описание / совет */}
-                    <div className="relative z-10 mt-4 sm:mt-6">
+                    {/* Описание */}
+                    <div className="relative z-10 mt-3 sm:mt-6">
                       <p className="text-[13px] sm:text-[14px] text-neutral-300 leading-relaxed max-w-2xl">
                         {currentSlide.description}
                       </p>
                     </div>
 
                     {/* Навигация по инсайтам */}
-                    <div className="relative z-10 mt-6 flex items-center justify-between gap-4">
-                      {/* Левая часть — прогресс / номер инсайта */}
+                    <div className="relative z-10 mt-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                       <div className="flex flex-col gap-1 text-[11px] text-neutral-400">
                         <span>
                           Инсайт {currentInsight + 1} из {insightSlides.length}
                         </span>
-                        <div className="h-1 w-28 rounded-full bg-neutral-900 overflow-hidden">
+                        <div className="h-1 w-32 rounded-full bg-neutral-900 overflow-hidden">
                           <div
                             className="h-full bg-gradient-to-r from-emerald-400 to-lime-300"
                             style={{
@@ -637,8 +633,7 @@ export default function AppDashboardPage() {
                         </div>
                       </div>
 
-                      {/* Пагинация-точки + стрелки */}
-                      <div className="flex items-center gap-4">
+                      <div className="flex items-center justify-between sm:justify-end gap-3">
                         <div className="hidden sm:flex items-center gap-1.5">
                           {insightSlides.map((slide, idx) => (
                             <button
@@ -674,13 +669,12 @@ export default function AppDashboardPage() {
                 </div>
               </section>
             )}
-            {/* ---------- КОНЕЦ БЛОКА СТОРИС-КАРТОЧКИ ---------- */}
 
             {/* Сводка по менеджерам */}
             {topManagers.length > 0 && (
               <section className="mt-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-neutral-500">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
+                  <h2 className="text-xs sm:text-sm font-semibold uppercase tracking-[0.16em] text-neutral-500">
                     Менеджеры (топ-5 по количеству звонков)
                   </h2>
                   <span className="text-[11px] text-neutral-500">
@@ -692,47 +686,92 @@ export default function AppDashboardPage() {
                 </div>
 
                 <div className="overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950 shadow-[0_18px_40px_rgba(0,0,0,0.75)]">
-                  <table className="min-w-full text-left text-sm">
-                    <thead className="bg-neutral-950 text-[11px] uppercase text-neutral-500">
-                      <tr>
-                        <th className="px-4 py-3">Менеджер</th>
-                        <th className="px-4 py-3">Звонков</th>
-                        <th className="px-4 py-3">DONE</th>
-                        <th className="px-4 py-3">Средний score</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {topManagers.map((m) => (
-                        <tr
-                          key={m.name}
-                          className="border-t border-neutral-800/80 hover:bg-neutral-900/70 transition-colors"
-                        >
-                          <td className="px-4 py-2 text-sm text-neutral-200">
-                            {m.name}
-                          </td>
-                          <td className="px-4 py-2 text-sm text-neutral-200">
-                            {m.total}
-                          </td>
-                          <td className="px-4 py-2 text-sm text-neutral-200">
-                            {m.done}
-                          </td>
-                          <td className="px-4 py-2 text-sm text-neutral-200">
-                            {m.avgScore ? `${m.avgScore}/100` : "—"}
-                          </td>
+                  {/* Desktop — таблица */}
+                  <div className="hidden md:block w-full">
+                    <table className="min-w-full text-left text-sm">
+                      <thead className="bg-neutral-950 text-[11px] uppercase text-neutral-500">
+                        <tr>
+                          <th className="px-4 py-3">Менеджер</th>
+                          <th className="px-4 py-3">Звонков</th>
+                          <th className="px-4 py-3">DONE</th>
+                          <th className="px-4 py-3">Средний score</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {topManagers.map((m) => (
+                          <tr
+                            key={m.name}
+                            className="border-t border-neutral-800/80 hover:bg-neutral-900/70 transition-colors"
+                          >
+                            <td className="px-4 py-2 text-sm text-neutral-200">
+                              {m.name}
+                            </td>
+                            <td className="px-4 py-2 text-sm text-neutral-200">
+                              {m.total}
+                            </td>
+                            <td className="px-4 py-2 text-sm text-neutral-200">
+                              {m.done}
+                            </td>
+                            <td className="px-4 py-2 text-sm text-neutral-200">
+                              {m.avgScore ? `${m.avgScore}/100` : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Mobile — карточки */}
+                  <div className="md:hidden divide-y divide-neutral-800/80">
+                    {topManagers.map((m) => (
+                      <div
+                        key={m.name}
+                        className="px-4 py-3 flex flex-col gap-1.5"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-medium text-neutral-100 break-words">
+                            {m.name}
+                          </span>
+                          {m.avgScore ? (
+                            <span className="text-[11px] rounded-full bg-neutral-900 border border-neutral-700 px-2 py-0.5 text-neutral-200">
+                              {m.avgScore}/100
+                            </span>
+                          ) : (
+                            <span className="text-[11px] text-neutral-500">
+                              без оценки
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap gap-2 text-[11px] text-neutral-400">
+                          <span className="inline-flex items-center gap-1 rounded-full bg-neutral-900/80 px-2 py-0.5">
+                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                            Звонков:{" "}
+                            <span className="text-neutral-100 font-medium">
+                              {m.total}
+                            </span>
+                          </span>
+                          <span className="inline-flex items-center gap-1 rounded-full bg-neutral-900/80 px-2 py-0.5">
+                            <span className="h-1.5 w-1.5 rounded-full bg-sky-400" />
+                            DONE:{" "}
+                            <span className="text-neutral-100 font-medium">
+                              {m.done}
+                            </span>
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </section>
             )}
 
             {/* Разделы */}
             <section className="mt-4">
-              <h2 className="mb-3 text-sm font-semibold uppercase tracking-[0.16em] text-neutral-500">
+              <h2 className="mb-3 text-xs sm:text-sm font-semibold uppercase tracking-[0.16em] text-neutral-500">
                 Разделы
               </h2>
-              <div className="grid gap-4 md:grid-cols-3">
+              <div className="grid gap-3 sm:gap-4 sm:grid-cols-3">
                 <Link
                   href="/app/calls"
                   className="group rounded-2xl border border-neutral-800 bg-neutral-950 p-4 shadow-[0_16px_35px_rgba(0,0,0,0.75)] transition hover:border-emerald-400/70 hover:bg-neutral-900 hover:shadow-[0_22px_60px_rgba(0,0,0,0.9)]"
@@ -740,7 +779,7 @@ export default function AppDashboardPage() {
                   <div className="text-[11px] uppercase text-neutral-500">
                     Calls
                   </div>
-                  <div className="mt-2 text-lg font-semibold text-neutral-50">
+                  <div className="mt-2 text-base sm:text-lg font-semibold text-neutral-50">
                     Журнал звонков
                   </div>
                   <p className="mt-1 text-xs text-neutral-400">
@@ -758,7 +797,7 @@ export default function AppDashboardPage() {
                   <div className="text-[11px] uppercase text-neutral-500">
                     Analytics
                   </div>
-                  <div className="mt-2 text-lg font-semibold text-neutral-50">
+                  <div className="mt-2 text-base sm:text-lg font-semibold text-neutral-50">
                     Глубокая аналитика
                   </div>
                   <p className="mt-1 text-xs text-neutral-400">
@@ -776,7 +815,7 @@ export default function AppDashboardPage() {
                   <div className="text-[11px] uppercase text-neutral-500">
                     Integrations
                   </div>
-                  <div className="mt-2 text-lg font-semibold text-neutral-50">
+                  <div className="mt-2 text-base sm:text-lg font-semibold text-neutral-50">
                     Интеграции
                   </div>
                   <p className="mt-1 text-xs text-neutral-400">
@@ -791,11 +830,13 @@ export default function AppDashboardPage() {
 
             {/* Последние звонки */}
             <section className="mt-6 space-y-3">
-              <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-neutral-500">
+              <h2 className="text-xs sm:text-sm font-semibold uppercase tracking-[0.16em] text-neutral-500">
                 Последние звонки
               </h2>
+
               <div className="overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950 shadow-[0_18px_50px_rgba(0,0,0,0.8)]">
-                <div className="max-h-[340px] w-full overflow-auto">
+                {/* Desktop — таблица */}
+                <div className="hidden md:block max-h-[340px] w-full overflow-auto">
                   <table className="min-w-full text-left text-sm">
                     <thead className="bg-neutral-950 text-[11px] uppercase text-neutral-500">
                       <tr>
@@ -847,7 +888,7 @@ export default function AppDashboardPage() {
                                 ? `${c.score}/100`
                                 : "—"}
                             </td>
-                            <td className="px-4 py-2 text-[11px] text-neutral-500">
+                            <td className="px-4 py-2 text-[11px] text-neutral-500 break-all">
                               {c.id}
                             </td>
                           </tr>
@@ -855,6 +896,58 @@ export default function AppDashboardPage() {
                       })}
                     </tbody>
                   </table>
+                </div>
+
+                {/* Mobile — карточки */}
+                <div className="md:hidden max-h-[360px] w-full overflow-auto divide-y divide-neutral-800/80">
+                  {latestCalls.length === 0 && (
+                    <div className="px-4 py-6 text-center text-xs text-neutral-500">
+                      Пока нет звонков за выбранный период.
+                    </div>
+                  )}
+
+                  {latestCalls.map((c) => {
+                    const dt = new Date(c.createdAt);
+                    const formatted = dt.toLocaleString("ru-RU");
+                    const statusStyles =
+                      c.status === "DONE"
+                        ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/40"
+                        : c.status === "FAILED"
+                        ? "bg-red-500/10 text-red-300 border-red-500/40"
+                        : "bg-neutral-800/60 text-neutral-200 border-neutral-600/60";
+
+                    return (
+                      <div
+                        key={c.id}
+                        className="px-4 py-3 flex flex-col gap-2"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[12px] text-neutral-300">
+                            {formatted}
+                          </span>
+                          <span
+                            className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] ${statusStyles}`}
+                          >
+                            <span className="h-1.5 w-1.5 rounded-full bg-current mr-1.5 opacity-80" />
+                            {c.status}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between text-[12px] text-neutral-300">
+                          <span className="text-neutral-500">Score:</span>
+                          <span className="font-medium">
+                            {typeof c.score === "number"
+                              ? `${c.score}/100`
+                              : "—"}
+                          </span>
+                        </div>
+
+                        <div className="text-[11px] text-neutral-500 break-all">
+                          ID: {c.id}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </section>

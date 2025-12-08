@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-     "dev": "next dev",
-  "build": "prisma generate && next build",
-  "start": "next start",
-  "lint": "eslint",
+    "dev": "next dev",
+    "build": "prisma generate && next build",
+    "start": "next start",
+    "lint": "eslint",
     "worker": "ts-node -P tsconfig.worker.json -r tsconfig-paths/register worker/worker.ts"
   },
   "dependencies": {
@@ -14,6 +14,7 @@
     "@prisma/client": "^6.19.0",
     "bcrypt": "^6.0.0",
     "framer-motion": "^12.23.24",
+    "lucide-react": "^0.556.0",
     "next": "16.0.7",
     "next-auth": "^4.24.13",
     "openai": "^6.8.1",
