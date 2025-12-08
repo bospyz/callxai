@@ -1,128 +1,162 @@
 // src/lib/call-quota.ts
 
-import { db } from "@/lib/db";
+import { db } from "./db";
 import { SubscriptionStatus } from "@prisma/client";
 
-// 🔹 Фри-лимит: первые 30 звонков (>= 30 сек)
-const FREE_CALLS_LIMIT = 30;
+export type PlanKey = "free" | "start" | "pro" | "enterprise";
 
-// 🔹 Минимальная длительность звонка, который считается "боевым"
-const BILLABLE_MIN_DURATION_SEC = 30;
-
-// 🔹 Лимиты по планам (по количеству "боевых" звонков)
-const PLAN_LIMITS: Record<string, number | null> = {
-  // Базовая подписка: 2000 звонков >= 30 сек
-  start: 2000,
-  basic: 2000,
-
-  // PRO — можно задать свой лимит или сделать безлимит
-  pro: null,
-
-  // TEAM / ENTERPRISE — без лимита
-  team: null,
-  enterprise: null,
+export type CallsQuota = {
+  plan: PlanKey;
+  limit: number | null;     // null = безлимит
+  used: number;             // сколько звонков (>= 30 сек) уже есть за период
+  remaining: number | null; // сколько ещё можно
 };
 
-type QuotaReason =
-  | "no-subscription"          // только фри-лимит
-  | "within-free-limit"
-  | "free-limit-exceeded"
-  | "paid-plan-limited"        // платный, но с лимитом
-  | "paid-plan-unlimited";     // платный без лимита
+// Нормализуем название плана из subscription.plan
+export function normalizePlan(raw?: string | null): PlanKey {
+  const v = (raw ?? "FREE").toLowerCase();
+  if (v === "start") return "start";
+  if (v === "pro") return "pro";
+  if (v === "enterprise" || v === "ent") return "enterprise";
+  return "free";
+}
 
-export async function canCompanyIngestCall(companyId: string) {
-  // 1) Проверяем активную подписку компании
-  const activeSub = await db.subscription.findFirst({
+// Лимит по плану (боевые звонки длительностью >= 30 сек)
+export function getLimitForPlan(plan: PlanKey): number | null {
+  if (plan === "free") return 30;
+  if (plan === "start") return 2000;
+  if (plan === "pro") return 5000;
+  if (plan === "enterprise") return null; // без лимита
+  return 30;
+}
+
+// Текущий биллинг-период — календарный месяц
+function getCurrentPeriodStart() {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), 1);
+}
+
+/**
+ * Считает квоту по звонкам для компании:
+ * - берёт активную подписку,
+ * - считает звонки (duration >= 30) за текущий месяц,
+ * - возвращает план / лимит / used / remaining.
+ */
+export async function getRemainingCallsQuota(
+  companyId: string
+): Promise<CallsQuota> {
+  const sub = await db.subscription.findFirst({
     where: {
       companyId,
       status: SubscriptionStatus.ACTIVE,
     },
-    orderBy: {
-      createdAt: "desc",
-    },
+    orderBy: { createdAt: "desc" },
   });
 
-  // === СЛУЧАЙ 1: НЕТ ПОДПИСКИ → только 30 фри-звонков (>= 30 сек) ===
-  if (!activeSub) {
-    const callsCount = await db.call.count({
-      where: {
-        companyId,
-        duration: {
-          gte: BILLABLE_MIN_DURATION_SEC, // считаем только нормальные звонки
-        },
-      },
-    });
+  const plan = normalizePlan(sub?.plan);
+  const limit = getLimitForPlan(plan);
 
-    if (callsCount >= FREE_CALLS_LIMIT) {
-      return {
-        allowed: false,
-        reason: "free-limit-exceeded" as QuotaReason,
-        limit: FREE_CALLS_LIMIT,
-        callsCount,
-        remaining: 0,
-        billableMinDurationSec: BILLABLE_MIN_DURATION_SEC,
-      };
-    }
-
+  if (limit === null) {
+    // ENTERPRISE — без ограничений
     return {
-      allowed: true,
-      reason:
-        callsCount > 0 ? "within-free-limit" : "no-subscription",
-      limit: FREE_CALLS_LIMIT,
-      callsCount,
-      remaining: FREE_CALLS_LIMIT - callsCount,
-      billableMinDurationSec: BILLABLE_MIN_DURATION_SEC,
-    };
-  }
-
-  // === СЛУЧАЙ 2: ЕСТЬ АКТИВНАЯ ПОДПИСКА ===
-  const planKey = activeSub.plan.toLowerCase();
-
-  const planLimit = PLAN_LIMITS.hasOwnProperty(planKey)
-    ? PLAN_LIMITS[planKey]!
-    : null;
-
-  // Если план без лимита — бесконечные боевые звонки
-  if (planLimit === null) {
-    return {
-      allowed: true,
-      reason: "paid-plan-unlimited" as QuotaReason,
+      plan,
       limit: null,
-      callsCount: null,
+      used: 0,
       remaining: null,
-      billableMinDurationSec: BILLABLE_MIN_DURATION_SEC,
     };
   }
 
-  // План с ограничением по количеству боевых звонков
-  const callsCount = await db.call.count({
+  const periodStart = getCurrentPeriodStart();
+
+  // считаем только звонки >= 30 сек
+  const used = await db.call.count({
     where: {
       companyId,
+      createdAt: { gte: periodStart },
       duration: {
-        gte: BILLABLE_MIN_DURATION_SEC,
+        gte: 30,
       },
     },
   });
 
-  const remaining = planLimit - callsCount;
+  const remaining = Math.max(limit - used, 0);
 
-  if (remaining <= 0) {
+  return {
+    plan,
+    limit,
+    used,
+    remaining,
+  };
+}
+
+/**
+ * Helper для импорта: говорит, сколько ЗАПРОШЕННЫХ звонков
+ * реально можно подтянуть с учётом квоты.
+ */
+export async function getQuotaForImport(
+  companyId: string,
+  requested: number
+): Promise<{ allowed: number; quota: CallsQuota }> {
+  const quota = await getRemainingCallsQuota(companyId);
+
+  if (quota.limit === null) {
+    // безлимитный план — можно всё, что запросили
+    return {
+      allowed: requested,
+      quota,
+    };
+  }
+
+  const remaining = Math.max(quota.remaining ?? 0, 0);
+  const allowed = Math.max(Math.min(requested, remaining), 0);
+
+  return {
+    allowed,
+    quota: {
+      ...quota,
+      remaining,
+    },
+  };
+}
+
+/**
+ * Старый helper, чтобы не ломать существующий код.
+ * (возвращает "можно ли ещё грузить" в стиле твоей canCompanyIngestCall)
+ */
+export async function canCompanyIngestCall(companyId: string): Promise<{
+  allowed: boolean;
+  limit: number | null;
+  remaining: number | null;
+  plan: PlanKey;
+  reason: "unlimited" | "limit-reached" | "within-limit";
+}> {
+  const quota = await getRemainingCallsQuota(companyId);
+
+  if (quota.limit === null) {
+    return {
+      allowed: true,
+      limit: null,
+      remaining: null,
+      plan: quota.plan,
+      reason: "unlimited",
+    };
+  }
+
+  if ((quota.remaining ?? 0) <= 0) {
     return {
       allowed: false,
-      reason: "paid-plan-limited" as QuotaReason,
-      limit: planLimit,
-      callsCount,
+      limit: quota.limit,
       remaining: 0,
-      billableMinDurationSec: BILLABLE_MIN_DURATION_SEC,
+      plan: quota.plan,
+      reason: "limit-reached",
     };
   }
 
   return {
     allowed: true,
-    reason: "paid-plan-limited" as QuotaReason,
-    limit: planLimit,
-    callsCount,
-    remaining,
-    billableMinDurationSec: BILLABLE_MIN_DURATION_SEC,
+    limit: quota.limit,
+    remaining: quota.remaining,
+    plan: quota.plan,
+    reason: "within-limit",
   };
 }

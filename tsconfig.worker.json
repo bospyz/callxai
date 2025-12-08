@@ -1,0 +1,7 @@
+﻿{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "CommonJS"
+  },
+  "include": ["worker/**/*", "src/lib/call-analysis.ts", "src/lib/db.ts"]
+}

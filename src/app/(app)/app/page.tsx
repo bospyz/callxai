@@ -163,7 +163,8 @@ export default function AppDashboardPage() {
       const periodLabel =
         PERIOD_OPTIONS.find((p) => p.value === period)?.label || period;
 
-      a.download = `callx_calls_${periodLabel.replace(/\s+/g, "_")}.xlsx`;
+      a.download = `callx_calls_${periodLabel.replace(/\s+/g, "_")}.csv`;
+
       document.body.appendChild(a);
       a.click();
       a.remove();

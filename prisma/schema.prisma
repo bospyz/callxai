@@ -39,6 +39,13 @@ enum PaymentRequestStatus {
   CANCELLED
 }
 
+enum CallTaskStatus {
+  NEW
+  PROCESSING
+  DONE
+  ERROR
+}
+
 model Company {
   id               String   @id @default(cuid())
   stripeCustomerId String?
@@ -123,11 +130,17 @@ model Call {
   audioUrl   String?
   duration   Int?
 
+  // ???????? ???? ?????? ?? amoCRM
+  occurredAt DateTime?
+
   status     CallStatus @default(NEW)
   transcript String?
   score      Int?
   sentiment  String?
   meta       Json?
+
+  // ????? ? ???????? ???????
+  tasks CallTask[]
 
   @@unique([companyId, externalId])
   @@index([companyId])
@@ -135,6 +148,7 @@ model Call {
   @@index([status])
   @@index([createdAt])
   @@index([externalId])
+  @@index([occurredAt])
 }
 
 model Integration {
@@ -172,4 +186,19 @@ model AmoTrialUsage {
   amoDomain       String   @id
   usedByCompanyId String
   createdAt       DateTime @default(now())
+}
+
+model CallTask {
+  id        String         @id @default(cuid())
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  callId String
+  call   Call             @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  status   CallTaskStatus @default(NEW)
+  error    String?
+  attempts Int            @default(0)
+
+  @@index([status, createdAt])
 }

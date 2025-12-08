@@ -2,8 +2,7 @@
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { uploadRawObject } from "@/lib/s3";
-import { CallStatus } from "@prisma/client";
-import { enqueueCallProcessing } from "@/lib/workers/queue";
+import { CallStatus, CallTaskStatus } from "@prisma/client";
 
 export const runtime = "nodejs"; // чтобы был доступен Buffer
 
@@ -23,17 +22,17 @@ export async function POST(req: NextRequest) {
 
     if (!companyId) {
       return NextResponse.json(
-        { ok: false, error: "No company in session" },
+        { ok: false, error: "No companyId" },
         { status: 400 }
       );
     }
 
     const formData = await req.formData();
-    const file = formData.get("file");
+    const file = formData.get("file") as File | null;
 
-    if (!file || !(file instanceof File)) {
+    if (!file) {
       return NextResponse.json(
-        { ok: false, error: "Поле file обязательно" },
+        { ok: false, error: "No file" },
         { status: 400 }
       );
     }
@@ -41,7 +40,7 @@ export async function POST(req: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    const ext = (file.name.split(".").pop() || "wav").toLowerCase();
+    const ext = file.name.split(".").pop()?.toLowerCase() || "mp3";
     const key = `companies/${companyId}/calls/${Date.now()}-${Math.random()
       .toString(36)
       .slice(2)}.${ext}`;
@@ -60,7 +59,12 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    await enqueueCallProcessing({ callId: call.id });
+    await db.callTask.create({
+      data: {
+        callId: call.id,
+        status: CallTaskStatus.NEW,
+      },
+    });
 
     return NextResponse.json(
       {
@@ -68,12 +72,12 @@ export async function POST(req: NextRequest) {
         callId: call.id,
         audioUrl: url,
       },
-      { status: 200 }
+      { status: 201 }
     );
-  } catch (error) {
-    console.error("[upload] error", error);
+  } catch (err) {
+    console.error("[API] /api/upload error", err);
     return NextResponse.json(
-      { ok: false, error: "Ошибка при загрузке файла" },
+      { ok: false, error: "Internal Server Error" },
       { status: 500 }
     );
   }

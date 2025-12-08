@@ -6,6 +6,16 @@ import { db } from "@/lib/db";
 import { IntegrationType, SubscriptionStatus } from "@prisma/client";
 import { IntegrationsClient } from "@/components/app/IntegrationsClient";
 
+type PlanKey = "free" | "start" | "pro" | "enterprise";
+
+function normalizePlan(raw?: string | null): PlanKey {
+  const v = (raw ?? "FREE").toLowerCase();
+  if (v === "start") return "start";
+  if (v === "pro") return "pro";
+  if (v === "enterprise" || v === "ent") return "enterprise";
+  return "free";
+}
+
 export default async function Page() {
   const session = await auth();
   const user = session?.user as any;
@@ -47,20 +57,33 @@ export default async function Page() {
   const bitrix = find(IntegrationType.BITRIX24);
   const webhook = find(IntegrationType.WEBHOOK);
 
-  const plan = (activeSub?.plan ?? "FREE").toLowerCase();
+  const plan = normalizePlan(activeSub?.plan);
 
-  let planLabel = "FREE · 30 бесплатных звонков ≥ 30 сек";
-  let planHint =
-    "После 30 боевых звонков (длительность ≥ 30 секунд) нужно будет подключить платный тариф.";
+  // Лимиты по звонкам (только >= 30 сек)
+  let callsLimit: number | null = null;
+  let planLabel = "";
+  let planHint = "";
 
-  if (plan === "start") {
+  if (plan === "free") {
+    callsLimit = 30;
+    planLabel = "FREE · до 30 звонков ≥ 30 сек";
+    planHint =
+      "В бесплатном режиме CallX анализирует первые 30 боевых звонков (длительность от 30 секунд). Дальше новые звонки не подгружаются, пока не подключишь тариф START.";
+  } else if (plan === "start") {
+    callsLimit = 2000;
     planLabel = "START · до 2 000 звонков ≥ 30 сек в месяц";
     planHint =
-      "Лимит считается только по звонкам длительностью от 30 секунд и выше.";
+      "Этот тариф за 49 990 ₸ даёт лимит до 2 000 боевых звонков в месяц. Мы считаем только разговоры длительностью от 30 секунд и выше.";
+  } else if (plan === "pro") {
+    callsLimit = 5000;
+    planLabel = "PRO · до 5 000 звонков ≥ 30 сек в месяц";
+    planHint =
+      "Увеличенный лимит для отделов продаж с большим потоком. Также считаем только звонки от 30 секунд.";
   } else if (plan === "enterprise") {
+    callsLimit = null; // без лимита
     planLabel = "ENTERPRISE · без ограничений по звонкам ≥ 30 сек";
     planHint =
-      "Можно спокойно тянуть все боевые звонки из amoCRM / Bitrix24 без лимитов.";
+      "Можно спокойно тянуть все боевые звонки из amoCRM / Bitrix24 без лимитов по количеству.";
   }
 
   return (
@@ -77,7 +100,7 @@ export default async function Page() {
           </p>
 
           <div className="rounded-2xl border border-neutral-800 bg-neutral-950/90 px-4 py-3 text-xs text-neutral-300">
-            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-[11px] uppercase text-neutral-500">
                   Текущий режим
@@ -85,8 +108,14 @@ export default async function Page() {
                 <p className="text-sm font-medium text-neutral-50">
                   {planLabel}
                 </p>
+                {callsLimit !== null && (
+                  <p className="mt-1 text-[11px] text-neutral-500">
+                    После достижения лимита новые звонки перестают
+                    подгружаться — останутся только уже проанализированные.
+                  </p>
+                )}
               </div>
-              <p className="text-[11px] text-neutral-400 sm:text-right mt-2 sm:mt-0">
+              <p className="text-[11px] text-neutral-400 sm:text-right mt-1 sm:mt-0">
                 {planHint}
               </p>
             </div>

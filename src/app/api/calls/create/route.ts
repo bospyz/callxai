@@ -1,8 +1,7 @@
 ﻿import { NextRequest, NextResponse } from "next/server";
-import { CallStatus } from "@prisma/client";
+import { CallStatus, CallTaskStatus } from "@prisma/client";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { enqueueCallProcessing } from "@/lib/workers/queue";
 import { canCompanyIngestCall } from "@/lib/call-quota";
 
 /**
@@ -35,24 +34,18 @@ export async function POST(req: NextRequest) {
     const quota = await canCompanyIngestCall(companyId);
 
     if (!quota.allowed) {
-      const isFree =
-        quota.reason === "free-limit-exceeded" ||
-        quota.reason === "within-free-limit" ||
-        quota.reason === "no-subscription";
-
-      const message = isFree
-        ? `Ты выбрал все ${quota.limit} бесплатных звонков. Подключи тариф, чтобы продолжить анализировать отдел.`
-        : `Лимит звонков по текущему тарифу (${quota.limit ?? "без лимита"}) исчерпан. Обнови тариф в разделе биллинга, чтобы продолжить.`;
+      // reason: "within-limit" | "limit-reached" | "unlimited"
+      const isLimitReached = quota.reason === "limit-reached";
 
       return NextResponse.json(
         {
           ok: false,
-          error: message,
-          code: "LIMIT_REACHED",
-          limit: quota.limit,
-          callsCount: quota.callsCount,
-          remaining: quota.remaining,
-          limitType: isFree ? "FREE" : "PAID",
+          error: isLimitReached
+            ? `Лимит в ${quota.limit ?? 0} звонков исчерпан. Подключи или увеличь тариф, чтобы продолжить анализ звонков.`
+            : "Сейчас нельзя принять новый звонок — квота по звонкам недоступна.",
+          code: "CALL_QUOTA_EXCEEDED",
+          limit: quota.limit ?? null,
+          remaining: quota.remaining ?? null,
         },
         { status: 402 }
       );
@@ -80,9 +73,13 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // отправляем в воркер на обработку (транскрипция, скоринг и т.п.)
-await enqueueCallProcessing({ callId: call.id });
-
+    // создаём задачу для воркера
+    await db.callTask.create({
+      data: {
+        callId: call.id,
+        status: CallTaskStatus.NEW,
+      },
+    });
 
     return NextResponse.json(
       {

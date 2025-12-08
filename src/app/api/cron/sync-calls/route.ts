@@ -18,23 +18,31 @@ async function handleSync(req: NextRequest) {
     return new NextResponse("Missing companyId", { status: 400 });
   }
 
-  // ✅ Единая квота: 30 бесплатных звонков без подписки
+  // ✅ Общая квота (FREE / START / PRO / ENTERPRISE)
   const quota = await canCompanyIngestCall(companyId);
+  // quota: { allowed: boolean; reason: "within-limit" | "limit-reached" | "unlimited"; limit: number | null; remaining: number | null; callsCount: number; }
 
   if (!quota.allowed) {
+    const isLimitReached = quota.reason === "limit-reached";
+
     console.log(
-      `[CRON] sync-calls: company ${companyId} exceeded free limit (${quota.limit}).`
+      `[CRON] sync-calls: company ${companyId} quota blocked. reason=${quota.reason}, limit=${quota.limit}, remaining=${quota.remaining}`
     );
 
-    return NextResponse.json({
-      ok: false,
-      companyId,
-      created: 0,
-      code: "FREE_LIMIT_REACHED",
-      limit: quota.limit,
-      message:
-        "Лимит 30 бесплатных звонков исчерпан. Не синхронизируем новые звонки без подписки.",
-    });
+    return NextResponse.json(
+      {
+        ok: false,
+        companyId,
+        created: 0,
+        code: "CALL_QUOTA_EXCEEDED",
+        limit: quota.limit,
+        remaining: quota.remaining,
+        message: isLimitReached
+          ? `Лимит в ${quota.limit ?? 0} звонков исчерпан. Обнови или подключи тариф, чтобы продолжить синхронизацию.`
+          : "Сейчас синхронизация звонков недоступна по квоте.",
+      },
+      { status: 402 }
+    );
   }
 
   // Базовый лимит по URL-параметру
@@ -46,27 +54,26 @@ async function handleSync(req: NextRequest) {
     }
   }
 
-  // Фактический лимит с учётом оставшихся бесплатных звонков
+  // Фактический лимит с учётом оставшихся звонков по тарифу
   let effectiveLimit = limit;
 
-  if (
-    quota.reason === "within-free-limit" &&
-    typeof quota.remaining === "number"
-  ) {
+  if (quota.reason === "within-limit" && typeof quota.remaining === "number") {
     if (quota.remaining <= 0) {
       console.log(
-        `[CRON] sync-calls: company ${companyId} has 0 remaining free calls.`
+        `[CRON] sync-calls: company ${companyId} has 0 remaining calls in plan.`
       );
-      return NextResponse.json({
-        ok: true,
-        companyId,
-        created: 0,
-        code: "FREE_LIMIT_REACHED",
-        limit: quota.limit,
-        freeRemaining: 0,
-        message:
-          "Доступных бесплатных звонков не осталось. Для продолжения нужна подписка.",
-      });
+      return NextResponse.json(
+        {
+          ok: false,
+          companyId,
+          created: 0,
+          code: "CALL_QUOTA_EXCEEDED",
+          limit: quota.limit,
+          remaining: quota.remaining,
+          message: `Достигнут лимит в ${quota.limit ?? 0} звонков по текущему тарифу. Обнови тариф в разделе биллинга, чтобы продолжить синхронизацию.`,
+        },
+        { status: 402 }
+      );
     }
 
     if (effectiveLimit > quota.remaining) {
@@ -81,8 +88,8 @@ async function handleSync(req: NextRequest) {
       created: 0,
       code: "NOTHING_TO_SYNC",
       limit: quota.limit,
-      freeRemaining: quota.remaining ?? null,
-      message: "Нет доступных звонков для синхронизации.",
+      remaining: quota.remaining ?? null,
+      message: "Нет доступных звонков для синхронизации по текущей квоте.",
     });
   }
 
@@ -97,9 +104,9 @@ async function handleSync(req: NextRequest) {
       companyId,
       created: result.created,
       code: "SYNC_OK",
-      limit: effectiveLimit,
-      freeLimit: quota.limit,
-      freeRemaining: quota.remaining ?? null,
+      usedLimit: effectiveLimit,
+      planLimit: quota.limit,
+      remainingAfter: quota.remaining, // это «до» вызова, но для фронта всё равно ок как референс
       message: result.message,
     });
   } catch (error: any) {

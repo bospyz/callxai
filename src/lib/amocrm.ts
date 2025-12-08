@@ -1,6 +1,7 @@
 ﻿import { db } from "@/lib/db";
 import {
   CallStatus,
+  CallTaskStatus,
   IntegrationType,
   SubscriptionStatus,
 } from "@prisma/client";
@@ -38,6 +39,8 @@ export async function hasActivePaidSubscription(
   return !!sub;
 }
 
+// ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ WORKFLOW ----------
+
 async function getAmoIntegration(
   companyId: string
 ): Promise<AmoIntegrationWithConfig | null> {
@@ -49,62 +52,70 @@ async function getAmoIntegration(
     },
   });
 
-  if (!integration || !integration.config) return null;
+  if (!integration) return null;
 
-  const config = integration.config as AmoIntegrationConfig;
-
-  if (!config.domain || !config.accessToken) return null;
+  const config = integration.config as any;
 
   return {
     id: integration.id,
-    companyId,
-    config,
+    companyId: integration.companyId,
+    config: {
+      domain: config.domain,
+      apiDomain: config.apiDomain ?? null,
+      accessToken: config.accessToken,
+      refreshToken: config.refreshToken ?? null,
+      clientId: config.clientId ?? null,
+      clientSecret: config.clientSecret ?? null,
+      redirectUri: config.redirectUri ?? null,
+      lastSyncAt: config.lastSyncAt ?? null,
+      tokenExpiresAt: config.tokenExpiresAt ?? null,
+    },
   };
 }
 
 async function amoFetch(
   config: AmoIntegrationConfig,
-  path: string
-): Promise<any> {
-  const baseDomain = config.apiDomain || config.domain;
-  const url = `https://${baseDomain}${path}`;
+  path: string,
+  init?: RequestInit
+) {
+  const apiDomain = config.apiDomain || `${config.domain}`;
+  const url = `https://${apiDomain}${path}`;
 
   const res = await fetch(url, {
+    ...init,
     headers: {
       Authorization: `Bearer ${config.accessToken}`,
       "Content-Type": "application/json",
+      ...(init?.headers || {}),
     },
   });
 
-  if (res.status === 401) {
-    throw new Error("amoCRM access token expired or invalid");
-  }
-
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`amoFetch error: ${res.status} ${text}`);
+    throw new Error(`amoFetch failed ${res.status}: ${text}`);
   }
 
-  try {
-    return await res.json();
-  } catch {
-    return null;
-  }
+  return res.json();
 }
+
+// ---------- ОБЩИЙ ТИП ДЛЯ ИМПОРТИРУЕМЫХ ЗВОНКОВ ----------
+
+type ImportedCallItem = {
+  externalId: string;
+  audioUrl: string | null;
+  duration: number | null;
+  managerName: string | null;
+  phone: string | null;
+  raw: any;
+  occurredAt: Date | null;
+};
+
+// ---------- ПОЛУЧЕНИЕ FRESH NOTES (CALLS) ИЗ AMO ----------
 
 async function fetchRecentCallsFromAmo(
   config: AmoIntegrationConfig,
   limit: number
-): Promise<
-  {
-    externalId: string;
-    audioUrl: string | null;
-    duration: number | null;
-    managerName: string | null;
-    phone: string | null;
-    raw: any;
-  }[]
-> {
+): Promise<ImportedCallItem[]> {
   const result = await amoFetch(
     config,
     `/api/v4/leads/notes?note_type=10&limit=${limit}`
@@ -114,7 +125,7 @@ async function fetchRecentCallsFromAmo(
     return [];
   }
 
-  return result._embedded.notes.map((note: any) => {
+  return result._embedded.notes.map((note: any): ImportedCallItem => {
     const externalId = String(note.id);
     const audioUrl =
       note.params?.file || note.params?.link || note.params?.url || null;
@@ -123,6 +134,10 @@ async function fetchRecentCallsFromAmo(
       ? `user_${note.responsible_user_id}`
       : null;
     const phone = note.params?.phone ?? null;
+    const occurredAt =
+      typeof note.created_at === "number"
+        ? new Date(note.created_at * 1000)
+        : null;
 
     return {
       externalId,
@@ -131,22 +146,15 @@ async function fetchRecentCallsFromAmo(
       managerName,
       phone,
       raw: note,
+      occurredAt,
     };
   });
 }
 
-// ---------- STUB-МОД ДЛЯ MVP ----------
+// ---------- STUB-МОД ДЛЯ LOCAL / DEMO ----------
 
-function buildStubItems(limit: number) {
-  const items: {
-    externalId: string;
-    audioUrl: string | null;
-    duration: number | null;
-    managerName: string | null;
-    phone: string | null;
-    raw: any;
-  }[] = [];
-
+function buildStubItems(limit: number): ImportedCallItem[] {
+  const items: ImportedCallItem[] = [];
   const now = Date.now();
 
   for (let i = 0; i < limit; i++) {
@@ -162,6 +170,7 @@ function buildStubItems(limit: number) {
         index: idx,
         createdAt: new Date(now - i * 60_000).toISOString(),
       },
+      occurredAt: new Date(now - i * 60_000),
     });
   }
 
@@ -173,40 +182,24 @@ function buildStubItems(limit: number) {
 export async function syncAmoRecentCalls(opts: {
   companyId: string;
   limit?: number;
-}): Promise<{ ok: boolean; created: number; message: string }> {
-  const { companyId, limit = 50 } = opts;
+}): Promise<{
+  ok: boolean;
+  created: number;
+  message?: string;
+}> {
+  const { companyId, limit = 100 } = opts;
 
   const amo = await getAmoIntegration(companyId);
 
   if (!amo) {
-    if (!AMO_STUB_MODE) {
-      throw new Error("amoCRM integration not found or not configured");
-    }
-
-    const stubItems = buildStubItems(limit);
-    const created = await saveItemsAsCalls(
-      companyId,
-      stubItems,
-      "amocrm-stub-no-integration"
-    );
-
     return {
-      ok: true,
-      created,
-      message: `STUB: создано ${created} тестовых звонков без реальной amoCRM (интеграция не настроена).`,
+      ok: false,
+      created: 0,
+      message: "Интеграция AmoCRM не найдена",
     };
   }
 
-  let items:
-    | {
-        externalId: string;
-        audioUrl: string | null;
-        duration: number | null;
-        managerName: string | null;
-        phone: string | null;
-        raw: any;
-      }[]
-    | null = null;
+  let items: ImportedCallItem[] | null = null;
 
   if (AMO_STUB_MODE) {
     items = buildStubItems(limit);
@@ -214,11 +207,19 @@ export async function syncAmoRecentCalls(opts: {
     items = await fetchRecentCallsFromAmo(amo.config, limit);
   }
 
-  const created = await saveItemsAsCalls(
+  if (!items || items.length === 0) {
+    return {
+      ok: true,
+      created: 0,
+      message: "Нет новых звонков в AmoCRM",
+    };
+  }
+
+  const created = await saveImportedCalls({
     companyId,
     items,
-    AMO_STUB_MODE ? "amocrm-stub" : "amocrm"
-  );
+    source: AMO_STUB_MODE ? "amocrm-stub" : "amocrm",
+  });
 
   try {
     const newConfig: AmoIntegrationConfig = {
@@ -237,96 +238,21 @@ export async function syncAmoRecentCalls(opts: {
   return {
     ok: true,
     created,
-    message: AMO_STUB_MODE
-      ? `STUB: создано ${created} тестовых звонков (режим заглушки amoCRM).`
-      : `Импортированы последние ${limit} звонков из amoCRM. Новых записей: ${created}.`,
+    message: `Импортировано ${created} звонков из AmoCRM`,
   };
 }
 
-/**
- * Обновление токенов amoCRM для всех включённых интеграций.
- */
-export async function refreshAllAmoTokens() {
-  const integrations = await db.integration.findMany({
-    where: {
-      type: IntegrationType.AMOCRM,
-      enabled: true,
-    },
-  });
+// ---------- СОХРАНЕНИЕ ИМПОРТИРОВАННЫХ ЗВОНКОВ ----------
 
-  for (const integration of integrations) {
-    const config = integration.config as any as AmoIntegrationConfig;
+type SaveImportedCallsOpts = {
+  companyId: string;
+  items: ImportedCallItem[];
+  source: string;
+};
 
-    if (!config.refreshToken || !config.clientId || !config.clientSecret) {
-      console.warn(
-        "[amo] skip refresh for integration without refreshToken/clientId/clientSecret",
-        integration.id
-      );
-      continue;
-    }
+async function saveImportedCalls(opts: SaveImportedCallsOpts): Promise<number> {
+  const { companyId, items, source } = opts;
 
-    const domain = config.apiDomain || config.domain;
-    const url = `https://${domain}/oauth2/access_token`;
-
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          client_id: config.clientId,
-          client_secret: config.clientSecret,
-          grant_type: "refresh_token",
-          refresh_token: config.refreshToken,
-          redirect_uri: config.redirectUri,
-        }),
-      });
-
-      if (!res.ok) {
-        console.error(
-          "[amo] token refresh failed",
-          integration.id,
-          res.status,
-          res.statusText
-        );
-        continue;
-      }
-
-      const data = (await res.json()) as any;
-
-      const updatedConfig: AmoIntegrationConfig = {
-        ...config,
-        accessToken: data.access_token,
-        refreshToken: data.refresh_token ?? config.refreshToken,
-        tokenExpiresAt: data.expires_in
-          ? new Date(Date.now() + data.expires_in * 1000).toISOString()
-          : config.tokenExpiresAt ?? null,
-      };
-
-      await db.integration.update({
-        where: { id: integration.id },
-        data: { config: updatedConfig as any },
-      });
-
-      console.log("[amo] token refreshed for integration", integration.id);
-    } catch (err) {
-      console.error("[amo] token refresh error", integration.id, err);
-    }
-  }
-}
-
-// Вспомогательная функция сохранения звонков в БД с дедупликацией по externalId
-async function saveItemsAsCalls(
-  companyId: string,
-  items: {
-    externalId: string;
-    audioUrl: string | null;
-    duration: number | null;
-    managerName: string | null;
-    phone: string | null;
-    raw: any;
-  }[],
-  source: string
-): Promise<number> {
   let created = 0;
 
   for (const item of items) {
@@ -340,16 +266,15 @@ async function saveItemsAsCalls(
       select: { id: true },
     });
 
-    if (existing) {
-      continue;
-    }
+    if (existing) continue;
 
-    await db.call.create({
+    const call = await db.call.create({
       data: {
         companyId,
         externalId: item.externalId,
         audioUrl: item.audioUrl,
         duration: item.duration,
+        occurredAt: item.occurredAt ?? null,
         status: CallStatus.NEW,
         meta: {
           source,
@@ -360,8 +285,28 @@ async function saveItemsAsCalls(
       },
     });
 
+    await db.callTask.create({
+      data: {
+        callId: call.id,
+        status: CallTaskStatus.NEW,
+      },
+    });
+
     created += 1;
   }
 
   return created;
+}
+// ---------- ОБНОВЛЕНИЕ AMO ТОКЕНОВ (STUB) ----------
+
+/**
+ * Заглушка для крон-скрипта.
+ * В будущем сюда можно повесить рефреш всех AmoCRM токенов компании.
+ */
+export async function refreshAllAmoTokens(): Promise<void> {
+  // На проде тут можно:
+  // 1) найти все интеграции AmoCRM с истекающим токеном
+  // 2) обновить access/refresh токены через OAuth
+  // Пока просто заглушка, чтобы не ломать билд.
+  return;
 }

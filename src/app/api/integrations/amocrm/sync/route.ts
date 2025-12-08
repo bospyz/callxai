@@ -1,8 +1,10 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+﻿// src/app/api/integrations/amocrm/sync/route.ts
+
+import { NextRequest, NextResponse } from "next/server";
 import { requireAuthWithCompany } from "@/lib/auth-guard";
 import { db } from "@/lib/db";
 import { syncAmoRecentCalls } from "@/lib/amocrm";
-import { canCompanyIngestCall } from "@/lib/call-quota";
+import { getQuotaForImport } from "@/lib/call-quota";
 
 type SyncBody = {
   limit?: number;
@@ -10,6 +12,19 @@ type SyncBody = {
   skipShort?: boolean;
   minDurationSec?: number;
 };
+
+function buildLimitReachedMessage(plan: string, limit: number | null) {
+  if (limit == null) {
+    return "Лимит по звонкам не ограничен, но импорт временно недоступен.";
+  }
+
+  if (plan === "free") {
+    return `Лимит в ${limit} бесплатных звонков исчерпан. Подключи тариф START на странице биллинга, чтобы продолжить анализ звонков.`;
+  }
+
+  // START / PRO / др.
+  return `Лимит в ${limit} звонков по текущему тарифу исчерпан. Обнови тариф или свяжись с поддержкой, чтобы увеличить лимит.`;
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -24,10 +39,11 @@ export async function POST(req: NextRequest) {
 
     // Лимит запрашиваемых звонков из тела
     const rawLimit = body?.limit;
-    let limit = typeof rawLimit === "number" ? rawLimit : 50;
-    if (!Number.isFinite(limit) || limit <= 0) limit = 50;
-    if (limit < 10) limit = 10;
-    if (limit > 500) limit = 500;
+    let requestedLimit = typeof rawLimit === "number" ? rawLimit : 50;
+    if (!Number.isFinite(requestedLimit) || requestedLimit <= 0)
+      requestedLimit = 50;
+    if (requestedLimit < 10) requestedLimit = 10;
+    if (requestedLimit > 500) requestedLimit = 500;
 
     // Период в днях (для очистки коротких звонков)
     const rawDays = body?.days;
@@ -43,63 +59,44 @@ export async function POST(req: NextRequest) {
     if (minDurationSec < 5) minDurationSec = 5;
     if (minDurationSec > 3600) minDurationSec = 3600;
 
-    // ✅ Проверка квоты компании (30 бесплатных звонков без подписки)
-    const quota = await canCompanyIngestCall(companyId);
+    // ✅ Считаем, сколько звонков реально можно подгрузить по квоте
+    const { allowed: effectiveLimit, quota } = await getQuotaForImport(
+      companyId,
+      requestedLimit
+    );
 
-    if (!quota.allowed) {
-      // Уже превысили бесплатный лимит
+    // Если лимит выбит — ничего не грузим
+    if (quota.limit !== null && effectiveLimit <= 0) {
       return NextResponse.json(
         {
           ok: false,
-          error: `Лимит в ${quota.limit} бесплатных звонков исчерпан. Подключи подписку на странице биллинга, чтобы продолжить анализ звонков.`,
-          code: "FREE_LIMIT_REACHED",
-          limit: quota.limit,
+          code: "LIMIT_REACHED",
+          error: buildLimitReachedMessage(quota.plan, quota.limit),
+          plan: quota.plan,
+          quota,
         },
         { status: 402 }
       );
     }
 
-    // По дефолту используем тот limit, что пришёл в body
-    let effectiveLimit = limit;
-
-    // Если компания без подписки и в рамках бесплатного лимита —
-    // режем фактический лимит по оставшимся звонкам.
-    if (
-      quota.reason === "within-free-limit" &&
-      typeof quota.remaining === "number"
-    ) {
-      if (quota.remaining <= 0) {
-        return NextResponse.json(
-          {
-            ok: false,
-            error: `Лимит в ${quota.limit} бесплатных звонков исчерпан. Подключи подписку на странице биллинга, чтобы продолжить анализ звонков.`,
-            code: "FREE_LIMIT_REACHED",
-            limit: quota.limit,
-          },
-          { status: 402 }
-        );
-      }
-
-      if (effectiveLimit > quota.remaining) {
-        effectiveLimit = quota.remaining;
-      }
-    }
-
-    // Если effectiveLimit оказался 0 — синкать нечего
+    // Если effectiveLimit всё равно 0 (на всякий случай) — просто возвращаем инфу
     if (effectiveLimit <= 0) {
       return NextResponse.json(
         {
           ok: true,
+          requestedLimit,
           limit: 0,
           days,
           skipShort,
           minDurationSec: skipShort ? minDurationSec : null,
           created: 0,
           skippedShort: 0,
-          freeLimit: quota.limit,
-          freeRemaining: quota.remaining ?? null,
+          plan: quota.plan,
+          quota,
+          freeLimit: quota.limit, // оставил поля для совместимости с фронтом
+          freeRemaining: quota.remaining,
           message:
-            "Доступных бесплатных звонков не осталось. Подключи подписку, чтобы продолжить синхронизацию.",
+            "Доступных звонков по квоте не осталось. Обнови тариф, чтобы продолжить синхронизацию.",
         },
         { status: 200 }
       );
@@ -131,19 +128,25 @@ export async function POST(req: NextRequest) {
     const createdCount =
       typeof result?.created === "number" ? result.created : null;
 
-    return NextResponse.json({
-      ok: true,
-      limit: effectiveLimit,
-      days,
-      skipShort,
-      minDurationSec: skipShort ? minDurationSec : null,
-      created: createdCount,
-      skippedShort,
-      freeLimit: quota.limit,
-      freeRemaining: quota.remaining ?? null,
-      message: `Синхронизировали звонки из amoCRM (лимит ${effectiveLimit}, период ~${days} дней, удалено коротких: ${skippedShort}).`,
-    });
-    } catch (err: any) {
+    return NextResponse.json(
+      {
+        ok: true,
+        requestedLimit,
+        limit: effectiveLimit,
+        days,
+        skipShort,
+        minDurationSec: skipShort ? minDurationSec : null,
+        created: createdCount,
+        skippedShort,
+        plan: quota.plan,
+        quota,
+        freeLimit: quota.limit, // для старого фронта
+        freeRemaining: quota.remaining,
+        message: `Синхронизировали звонки из amoCRM (запрошено ${requestedLimit}, лимит по квоте ${effectiveLimit}, период ~${days} дней, удалено коротких: ${skippedShort}).`,
+      },
+      { status: 200 }
+    );
+  } catch (err: any) {
     const msg = String(err?.message || err);
 
     // токен amoCRM истёк / невалиден — даём понятный ответ
