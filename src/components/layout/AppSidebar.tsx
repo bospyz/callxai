@@ -15,8 +15,6 @@ import {
   CreditCard,
   Settings,
   LogOut,
-  Menu,
-  X,
 } from "lucide-react";
 
 type NavItem = {
@@ -71,7 +69,8 @@ export default function AppSidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const { data: session } = useSession();
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  const [dockOpen, setDockOpen] = useState(false);
 
   const email = session?.user?.email ?? "demo@callxai.dev";
   const name = session?.user?.name ?? "Руководитель";
@@ -91,49 +90,48 @@ export default function AppSidebar() {
 
   return (
     <>
-      {/* MOBILE: верхняя панель (прозрачная) */}
-      <header
-        className="
-          fixed top-0 inset-x-0 z-40
-          border-b border-transparent
-          bg-transparent
-          backdrop-blur-none
-          md:hidden
-        "
-      >
-        <div className="flex items-center justify-between px-4 py-3">
-          {/* Лого */}
-          <Link href="/app" className="group">
-            <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-white/10 border border-white/20 text-[11px] font-semibold tracking-[0.18em] text-white group-hover:bg-white/20 group-hover:border-white/40 transition">
-              CX
-            </div>
-          </Link>
+      {/* MOBILE: без хедера — навигация только в нижней пилюле */}
+      {/* (освобождаем верх полностью) */}
 
-          <div className="flex items-center gap-3">
-            {/* Аватар */}
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 border border-white/25 text-[13px] font-semibold text-white">
-              {avatarLetter}
+      {/* MOBILE: центральная нижняя пилюля с тремя полосками */}
+      <nav className="fixed bottom-4 inset-x-0 z-40 flex justify-center md:hidden pointer-events-none">
+        <div className="relative pointer-events-auto">
+          {/* Кнопка-лаунчер */}
+          <button
+            type="button"
+            onClick={() => setDockOpen((prev) => !prev)}
+            className="
+              mx-auto flex items-center justify-center
+              h-11 w-24 rounded-full
+              border border-white/20 bg-black/80
+              shadow-[0_20px_60px_rgba(0,0,0,0.9)]
+              backdrop-blur-2xl
+              hover:border-white/40 hover:bg-black/90
+              transition-all
+            "
+          >
+            {/* Три полоски по центру */}
+            <div className="flex flex-col gap-[3px] items-center justify-center">
+              <span className="h-[2px] w-7 rounded-full bg-white/70" />
+              <span className="h-[2px] w-5 rounded-full bg-white/60" />
+              <span className="h-[2px] w-7 rounded-full bg-white/50" />
             </div>
+          </button>
 
-            {/* Кнопка меню */}
-            <button
-              onClick={() => setMobileMenuOpen((prev) => !prev)}
-              className="flex h-9 w-9 items-center justify-center rounded-2xl border border-white/20 bg-white/5 text-white/80 hover:border-white/50 hover:bg-white/10 transition"
+          {/* Всплывающее меню над кнопкой */}
+          {dockOpen && (
+            <div
+              className="
+                absolute bottom-14 left-1/2 -translate-x-1/2
+                w-[92vw] max-w-md
+                rounded-3xl border border-white/15
+                bg-black/95 backdrop-blur-2xl
+                shadow-[0_24px_80px_rgba(0,0,0,0.95)]
+                px-4 py-4
+              "
             >
-              {mobileMenuOpen ? (
-                <X className="h-4 w-4" strokeWidth={1.8} />
-              ) : (
-                <Menu className="h-4 w-4" strokeWidth={1.8} />
-              )}
-            </button>
-          </div>
-        </div>
-
-        {/* Дропдаун меню под шапкой */}
-        {mobileMenuOpen && (
-          <div className="border-t border-white/10 bg-black/90 backdrop-blur-xl">
-            <div className="px-4 py-3 flex flex-col gap-4">
-              <div className="flex flex-wrap gap-3">
+              {/* Основные разделы */}
+              <div className="flex flex-wrap justify-center gap-3 mb-3">
                 {mainItems.map((item) => (
                   <NavIconButton
                     key={item.href}
@@ -145,9 +143,10 @@ export default function AppSidebar() {
                 ))}
               </div>
 
-              <div className="h-px w-full bg-white/10" />
+              <div className="h-px w-full bg-white/10 mb-3" />
 
-              <div className="flex flex-wrap gap-3 items-center justify-between">
+              {/* Системные + выход */}
+              <div className="flex items-center justify-between gap-3 text-[12px]">
                 <div className="flex gap-3">
                   {systemItems.map((item) => (
                     <NavIconButton
@@ -162,33 +161,18 @@ export default function AppSidebar() {
 
                 <button
                   onClick={handleLogout}
-                  className="flex items-center gap-2 rounded-2xl border border-white/20 bg-white/5 px-3 py-2 text-[13px] text-white/70 hover:text-red-400 hover:border-red-300 hover:bg-red-500/10 transition-all"
+                  className="flex items-center gap-2 rounded-2xl border border-red-400/60 bg-red-500/10 px-3 py-1.5 text-[12px] text-red-200 hover:bg-red-500/20 hover:border-red-300 transition-all"
                 >
                   <LogOut className="h-4 w-4" strokeWidth={1.7} />
                   <span>Выйти</span>
                 </button>
               </div>
             </div>
-          </div>
-        )}
-      </header>
-
-      {/* MOBILE: нижняя док-навигация */}
-      <nav className="fixed bottom-3 inset-x-0 z-40 flex justify-center md:hidden">
-        <div className="flex items-center gap-3 rounded-3xl border border.white/15 bg-black/80 px-3 py-2 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.8)]">
-          {mainItems.slice(0, 4).map((item) => (
-            <NavIconButton
-              key={item.href}
-              href={item.href}
-              Icon={item.Icon}
-              active={isActive(item.href)}
-              size="md"
-            />
-          ))}
+          )}
         </div>
       </nav>
 
-      {/* DESKTOP: левый сайдбар */}
+      {/* DESKTOP: левый sticky-сайдбар как был */}
       <aside className="hidden md:flex md:sticky md:top-0 h-screen w-[96px] bg-gradient-to-b from-black via-[#050814] to-black px-4 py-5">
         <motion.div
           initial={{ opacity: 0, x: -8 }}
@@ -201,7 +185,7 @@ export default function AppSidebar() {
             backdrop-blur-2xl py-5
           "
         >
-          {/* Лого */}
+          {/* Лого на десктопе оставили */}
           <Link href="/app" className="group">
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white/10 border border-white/20 text-[11px] font-semibold tracking-[0.18em] text-white group-hover:bg-white/20 group-hover:border-white/40 transition">
               CX

@@ -25,9 +25,9 @@ export default async function CallsPage() {
   if (!companyId) {
     return (
       <Shell>
-        <main className="px-4 py-6 sm:px-6 lg:px-10">
-          <h1 className="text-xl sm:text-2xl font-semibold">Нет доступа</h1>
-          <p className="mt-2 text-sm text-neutral-500 max-w-md">
+        <main className="px-4 pt-4 pb-8 sm:px-6 lg:px-10">
+          <h1 className="text-lg sm:text-2xl font-semibold">Нет доступа</h1>
+          <p className="mt-2 text-xs sm:text-sm text-neutral-500 max-w-md">
             Войди в рабочий кабинет компании, чтобы видеть звонки и аналитику.
           </p>
         </main>
@@ -43,7 +43,7 @@ export default async function CallsPage() {
 
   return (
     <Shell>
-      <main className="px-4 py-5 sm:px-6 lg:px-10 lg:py-7">
+      <main className="px-4 pt-4 pb-16 sm:px-6 sm:pt-5 sm:pb-10 lg:px-10 lg:pt-7">
         {/* HEADER */}
         <header className="mb-5 sm:mb-7 flex flex-col gap-1.5 sm:flex-row sm:items-end sm:justify-between">
           <div>
@@ -51,13 +51,13 @@ export default async function CallsPage() {
               Звонки
             </h1>
             <p className="mt-1 text-xs sm:text-sm text-neutral-500 max-w-xl">
-              Последние 50 звонков, которые CallX забрал из телефонии / CRM.
+              Последние 50 звонков, которые CALLX забрал из телефонии / CRM.
               Смотри статус обработки и проваливайся в детали разговора.
             </p>
           </div>
 
           {calls.length > 0 && (
-            <div className="mt-2 sm:mt-0 text-[11px] sm:text-xs text-neutral-500">
+            <div className="mt-1.5 sm:mt-0 text-[10px] sm:text-xs text-neutral-500">
               Показано{" "}
               <span className="font-medium text-neutral-200">
                 {calls.length}
@@ -69,7 +69,7 @@ export default async function CallsPage() {
 
         {/* EMPTY STATE */}
         {calls.length === 0 ? (
-          <div className="border border-neutral-900 rounded-2xl bg-neutral-950/70 px-4 py-5 sm:px-5 sm:py-6 text-sm text-neutral-300">
+          <div className="border border-neutral-900 rounded-2xl bg-neutral-950/80 px-4 py-5 sm:px-5 sm:py-6 text-xs sm:text-sm text-neutral-300">
             <p>
               Звонков пока нет. Подключи amoCRM или телефонию в разделе{" "}
               <Link
@@ -131,7 +131,7 @@ export default async function CallsPage() {
                       </div>
 
                       {/* Телефон */}
-                      <div className="text-xs text-neutral-300">
+                      <div className="text-xs text-neutral-300 break-all">
                         {phone}
                       </div>
 
@@ -150,7 +150,7 @@ export default async function CallsPage() {
               </div>
             </section>
 
-            {/* MOBILE / TABLET: CARD LIST VIEW */}
+            {/* MOBILE / SMALL TABLET: CARD LIST VIEW */}
             <section className="space-y-3 md:hidden">
               {calls.map((call) => {
                 const status = call.status as CallStatus;
@@ -159,12 +159,12 @@ export default async function CallsPage() {
                 return (
                   <div
                     key={call.id}
-                    className="rounded-2xl border border-neutral-900 bg-neutral-950/80 px-4 py-3 text-xs text-neutral-200 shadow-[0_14px_40px_rgba(0,0,0,0.7)]"
+                    className="rounded-2xl border border-neutral-900 bg-neutral-950/90 px-4 py-3 text-xs text-neutral-200 shadow-[0_14px_40px_rgba(0,0,0,0.7)]"
                   >
-                    {/* верхняя строка: дата + статус */}
+                    {/* верх: дата + статус */}
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex flex-col gap-0.5">
-                        <span className="text-[11px] text-neutral-500">
+                        <span className="text-[10px] text-neutral-500">
                           {new Date(call.createdAt).toLocaleDateString(
                             "ru-RU",
                             {
@@ -193,13 +193,13 @@ export default async function CallsPage() {
                       </span>
                     </div>
 
-                    {/* middle: телефон + score */}
-                    <div className="mt-2 flex items-center justify-between gap-2">
-                      <div className="flex flex-col gap-0.5">
+                    {/* середина: телефон + score */}
+                    <div className="mt-2 flex items-center justify-between gap-3">
+                      <div className="flex flex-col gap-0.5 min-w-0">
                         <span className="text-[10px] uppercase tracking-[0.16em] text-neutral-500">
                           Телефон
                         </span>
-                        <span className="text-[12px] text-neutral-200">
+                        <span className="text-[12px] text-neutral-200 break-all">
                           {phone}
                         </span>
                       </div>
@@ -213,8 +213,8 @@ export default async function CallsPage() {
                       </div>
                     </div>
 
-                    {/* bottom: ссылка */}
-                    <div className="mt-2 pt-2 border-t border-neutral-900 flex items-center justify-between">
+                    {/* низ: ID + ссылка */}
+                    <div className="mt-2 pt-2 border-t border-neutral-900 flex items-center justify-between gap-2">
                       <span className="text-[10px] text-neutral-500">
                         ID:{" "}
                         <span className="text-neutral-400">

@@ -27,8 +27,8 @@ export default function TermsPage() {
           <p>
             Настоящие Условия использования (далее — «Условия») регулируют
             доступ и использование сервиса <strong>CallXAI</strong> (далее —
-            «Сервис», «мы») юридическими и физическими лицами (далее —
-            «Клиент», «вы»).
+            «Сервис», «мы»), развиваемого основателем Renat Shakenov, юридическими
+            и физическими лицами (далее — «Клиент», «вы»).
           </p>
 
           <h2 className="mt-6 text-lg font-semibold">
@@ -91,7 +91,9 @@ export default function TermsPage() {
             основания и согласия для передачи данных в CallXAI.
           </p>
 
-          <h2 className="mt-6 text-lg font-semibold">5. Ограничение ответственности</h2>
+          <h2 className="mt-6 text-lg font-semibold">
+            5. Ограничение ответственности
+          </h2>
           <ul className="list-disc list-inside space-y-1">
             <li>
               Сервис предоставляется «как есть» (as is). Мы стремимся к
@@ -115,9 +117,10 @@ export default function TermsPage() {
           <p>
             Искусственный интеллект, алгоритмы, дизайн, исходный код и другие
             элементы Сервиса являются интеллектуальной собственностью CallXAI.
-            Клиент получает ограниченную, невexclusive лицензию на использование
-            Сервиса в рамках выбранного тарифа и не имеет права копировать,
-            модифицировать или распространять его без письменного согласия.
+            Клиент получает ограниченную, неисключительную лицензию на
+            использование Сервиса в рамках выбранного тарифа и не имеет права
+            копировать, модифицировать или распространять его без письменного
+            согласия.
           </p>
 
           <h2 className="mt-6 text-lg font-semibold">
@@ -145,7 +148,9 @@ export default function TermsPage() {
             Сервисом, вы подтверждаете согласие с изменениями.
           </p>
 
-          <h2 className="mt-6 text-lg font-semibold">9. Прекращение использования</h2>
+          <h2 className="mt-6 text-lg font-semibold">
+            9. Прекращение использования
+          </h2>
           <ul className="list-disc list-inside space-y-1">
             <li>
               Вы можете прекратить использование Сервиса, уведомив нас и
@@ -158,11 +163,22 @@ export default function TermsPage() {
           </ul>
 
           <h2 className="mt-6 text-lg font-semibold">10. Контакты</h2>
-          <p>
-            По вопросам, связанным с настоящими Условиями, вы можете обратиться
-            по адресу e-mail:{" "}
-            <span className="underline">support@callxai.org</span>.
-          </p>
+          <p>По вопросам, связанным с настоящими Условиями, вы можете обратиться:</p>
+          <ul className="list-disc list-inside space-y-1">
+            <li>
+              E-mail: <span className="underline">bospyn@gmail.com</span>
+            </li>
+            <li>
+              Телефон: <span className="underline">+7 775 333 64 21</span>
+            </li>
+            <li>
+              Telegram: <span className="underline">@bosemespiz</span>
+            </li>
+            <li>
+              Ответственное лицо за исполнение настоящих Условий и развитие
+              сервиса: основатель CallXAI — Renat Shakenov.
+            </li>
+          </ul>
         </section>
       </div>
     </main>
