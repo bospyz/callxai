@@ -1,10 +1,10 @@
 ﻿import { db } from "@/lib/db";
 import {
   CallStatus,
-  CallTaskStatus,
   IntegrationType,
   SubscriptionStatus,
 } from "@prisma/client";
+
 
 const AMO_STUB_MODE = process.env.AMO_STUB_MODE === "true";
 
@@ -285,12 +285,13 @@ async function saveImportedCalls(opts: SaveImportedCallsOpts): Promise<number> {
       },
     });
 
-    await db.callTask.create({
-      data: {
-        callId: call.id,
-        status: CallTaskStatus.NEW,
-      },
-    });
+ await db.callTask.create({
+  data: {
+    callId: call.id,
+    status: "NEW",
+  },
+});
+
 
     created += 1;
   }

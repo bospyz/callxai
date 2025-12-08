@@ -1,5 +1,5 @@
 ﻿import { NextRequest, NextResponse } from "next/server";
-import { CallStatus, CallTaskStatus } from "@prisma/client";
+import { CallStatus } from "@prisma/client";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { canCompanyIngestCall } from "@/lib/call-quota";
@@ -73,13 +73,13 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // создаём задачу для воркера
-    await db.callTask.create({
-      data: {
-        callId: call.id,
-        status: CallTaskStatus.NEW,
-      },
-    });
+  await db.callTask.create({
+  data: {
+    callId: call.id,
+    status: "NEW", // строкой, как в базе
+  },
+});
+
 
     return NextResponse.json(
       {
