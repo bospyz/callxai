@@ -1,48 +1,43 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+﻿// src/app/api/billing/request/route.ts
+
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { z } from "zod";
 
-const BillingRequestSchema = z.object({
-  plan: z.string().min(1),
-  fullName: z.string().min(1),
-  companyName: z.string().min(1),
+const RequestSchema = z.object({
+  plan: z.enum(["start", "pro", "enterprise"]),
+  fullName: z.string().min(2),
+  companyName: z.string().min(2),
   phone: z.string().min(5),
   email: z.string().email(),
-  billingDetails: z.string().optional(),
-  comment: z.string().optional(),
 });
 
 export async function POST(req: NextRequest) {
   try {
     const session = await auth();
-
-    if (!session || !session.user) {
-      return NextResponse.json(
-        { ok: false, error: "Unauthorized" },
-        { status: 401 }
-      );
-    }
-
-    const user = session.user as any;
-    const companyId = user.companyId as string | undefined;
+    const user = session?.user as any;
+    const companyId = user?.companyId as string | undefined;
 
     if (!companyId) {
       return NextResponse.json(
-        { ok: false, error: "No company in session" },
+        {
+          ok: false,
+          error: "Нет companyId в сессии. Перелогинься или заново создай аккаунт компании.",
+        },
         { status: 400 }
       );
     }
 
     const json = await req.json();
-    const parsed = BillingRequestSchema.safeParse(json);
+    const parsed = RequestSchema.safeParse(json);
 
     if (!parsed.success) {
       return NextResponse.json(
         {
           ok: false,
           error: "Некорректные данные заявки",
-          details: parsed.error.flatten(),
+          issues: parsed.error.format(),
         },
         { status: 400 }
       );
@@ -58,24 +53,20 @@ export async function POST(req: NextRequest) {
         companyName,
         phone,
         email,
+        // status не передаём — по схеме по умолчанию PENDING
       },
     });
 
     return NextResponse.json(
       {
         ok: true,
-        message: "Заявка на оплату успешно создана. Мы свяжемся с вами.",
+        message:
+          "Заявка на подключение тарифа отправлена. Мы свяжемся с тобой, чтобы подключить план.",
       },
       { status: 200 }
     );
-  } catch (error) {
-    console.error("[billing/request] error", error);
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "Внутренняя ошибка сервера при создании заявки на оплату",
-      },
-      { status: 500 }
-    );
+  } catch (err: any) {
+    console.error("[API] /api/billing/request error", err);
+    return new NextResponse("Internal Server Error", { status: 500 });
   }
 }
