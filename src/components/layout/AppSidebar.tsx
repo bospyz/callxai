@@ -46,9 +46,7 @@ type NavIconButtonProps = {
 
 function NavIconButton({ href, Icon, active, size = "lg" }: NavIconButtonProps) {
   const boxSize =
-    size === "lg"
-      ? "h-11 w-11 rounded-2xl"
-      : "h-10 w-10 rounded-2xl";
+    size === "lg" ? "h-11 w-11 rounded-2xl" : "h-10 w-10 rounded-2xl";
 
   return (
     <Link href={href} className="group">
@@ -93,8 +91,16 @@ export default function AppSidebar() {
 
   return (
     <>
-      {/* MOBILE: верхняя панель */}
-      <header className="fixed top-0 inset-x-0 z-40 border-b border-white/10 bg-black/80 backdrop-blur-xl md:hidden">
+      {/* MOBILE: верхняя панель (прозрачная) */}
+      <header
+        className="
+          fixed top-0 inset-x-0 z-40
+          border-b border-transparent
+          bg-transparent
+          backdrop-blur-none
+          md:hidden
+        "
+      >
         <div className="flex items-center justify-between px-4 py-3">
           {/* Лого */}
           <Link href="/app" className="group">
@@ -169,7 +175,7 @@ export default function AppSidebar() {
 
       {/* MOBILE: нижняя док-навигация */}
       <nav className="fixed bottom-3 inset-x-0 z-40 flex justify-center md:hidden">
-        <div className="flex items-center gap-3 rounded-3xl border border-white/15 bg-black/80 px-3 py-2 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.8)]">
+        <div className="flex items-center gap-3 rounded-3xl border border.white/15 bg-black/80 px-3 py-2 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.8)]">
           {mainItems.slice(0, 4).map((item) => (
             <NavIconButton
               key={item.href}

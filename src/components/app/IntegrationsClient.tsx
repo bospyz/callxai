@@ -48,7 +48,7 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
 
-  // Настройки импорта звонков
+  // Настройки импорта звонков (UI-состояние)
   const [skipShort, setSkipShort] = useState<boolean>(true);
   const [minDurationSec, setMinDurationSec] = useState<number>(30);
   const [limit, setLimit] = useState<number>(30);
@@ -99,7 +99,9 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
     } else {
       // платные: дефолт = remaining, потом limit / руками
       const base =
-        quotaRemaining ?? quotaLimit ?? Math.min(2000, maxLimitForInput || 2000);
+        quotaRemaining ??
+        quotaLimit ??
+        Math.min(2000, maxLimitForInput || 2000);
       setLimit(base);
     }
   }, [quota, plan, billableMin, quotaLimit, quotaRemaining, maxLimitForInput]);
@@ -225,8 +227,8 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
   }
 
   return (
-    // 🔥 ШИРОКИЙ КОНТЕЙНЕР НА ВСЮ ШИРИНУ
-    <div className="mx-auto w-full max-w-none px-4 sm:px-6 lg:px-10 xl:px-16 space-y-6">
+    // Широкий контейнер — адаптив под все
+    <div className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8 xl:px-10 space-y-6">
       {/* Хедер интеграций */}
       <div className="border border-neutral-900/80 rounded-2xl bg-gradient-to-b from-black via-black to-neutral-950 px-5 sm:px-8 lg:px-10 pt-6 pb-4 w-full">
         <div className="flex flex-col gap-3">
@@ -236,7 +238,7 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
           </div>
           <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
             <div className="space-y-1">
-              <h1 className="text-xl sm:text-2xl font-semibold text-neutral-50">
+              <h1 className="text-xl sm:text-2xl lg:text-3xl font-semibold text-neutral-50">
                 Подключения для твоего отдела продаж
               </h1>
               <p className="text-sm text-neutral-400 max-w-xl">
@@ -271,11 +273,10 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
         </div>
       </div>
 
-      {/* Контент на всю ширину */}
-      <div className="w-full grid gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,1.2fr)]">
-        {/* Левая колонка */}
+      {/* Две колонки: слева amo, справа — «справка» и скоро-фичи */}
+      <div className="w-full grid gap-5 lg:grid-cols-[minmax(0,2.2fr)_minmax(0,1.4fr)] items-start">
+        {/* ЛЕВАЯ КОЛОНКА — amoCRM + правила импорта */}
         <div className="space-y-5">
-          {/* amoCRM */}
           <div className="relative rounded-2xl border border-neutral-800 bg-neutral-950/60 p-4 sm:p-5 shadow-[0_0_40px_rgba(15,23,42,0.85)] overflow-hidden w-full">
             <div className="pointer-events-none absolute -right-20 -top-20 h-40 w-40 rounded-full bg-emerald-500/5 blur-3xl" />
             <div className="flex items-start justify-between gap-3 mb-3">
@@ -415,7 +416,7 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
 
               <div className="grid gap-3 sm:grid-cols-3 text-[13px] text-neutral-200">
                 <div className="space-y-1.5">
-                  <div className="text-[11px] uppercase tracking-[0.16ем] text-neutral-500">
+                  <div className="text-[11px] uppercase tracking-[0.16em] text-neutral-500">
                     сколько звонков тянуть
                   </div>
                   <input
@@ -520,6 +521,44 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
               </div>
             </div>
           </div>
+        </div>
+
+        {/* ПРАВАЯ КОЛОНКА — чек-лист, «скоро» и поддержка */}
+        <div className="space-y-4">
+          {/* Чек-лист подключения */}
+          <div className="rounded-2xl border border-neutral-800 bg-neutral-950/60 p-4 sm:p-5 shadow-[0_0_40px_rgba(15,23,42,0.75)]">
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.22em] text-neutral-600">
+                  чек-лист внедрения
+                </div>
+                <div className="text-sm text-neutral-200">
+                  Как подключить CALLX за 15 минут
+                </div>
+              </div>
+              <div className="h-8 w-8 rounded-2xl border border-emerald-400/50 bg-emerald-500/10 flex items-center justify-center text-[11px] text-emerald-300">
+                CX
+              </div>
+            </div>
+            <ul className="space-y-2.5 text-[13px] text-neutral-300">
+              <ChecklistItem
+                step={1}
+                text="Выбери CRM (amoCRM сейчас) или формат телефонии, с которой будем забирать записи."
+              />
+              <ChecklistItem
+                step={2}
+                text="Подключи amoCRM через домен и access token или оставь заявку на телефонию / SIP."
+              />
+              <ChecklistItem
+                step={3}
+                text='Запусти импорт звонков и дождись статуса DONE, потом зайди в раздел «Звонки».'
+              />
+              <ChecklistItem
+                step={4}
+                text="Открой аналитику, найди слабых менеджеров и зафиксируй план роста."
+              />
+            </ul>
+          </div>
 
           {/* Телефония / SIP — скоро */}
           <IntegrationCard
@@ -544,10 +583,25 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
             onToggle={() => {}}
             actions={[{ label: "Загрузить записи (скоро)", primary: true }]}
           />
-        </div>
 
-        {/* Правая колонка (чек-лист + поддержка) — оставь свой текущий код или докинем позже */}
-        {/* ... */}
+          {/* Поддержка */}
+          <div className="rounded-2xl border border-neutral-800 bg-gradient-to-br from-emerald-500/18 via-emerald-500/7 to-transparent p-4 sm:p-5">
+            <div className="text-[11px] uppercase tracking-[0.22em] text-emerald-300 mb-1">
+              поддержка
+            </div>
+            <div className="text-sm text-neutral-100 mb-2">
+              Нужна помощь с интеграцией?
+            </div>
+            <p className="text-[13px] text-neutral-300 mb-3">
+              Напиши нам в Telegram — подключим CALLX к твоей CRM и телефонии
+              аккуратно, без остановки работы отдела продаж.
+            </p>
+            <button className="inline-flex items-center gap-2 rounded-xl border border-emerald-400/60 bg-emerald-500/10 px-3.5 py-1.5 text-[13px] text-emerald-200 hover:bg-emerald-500/20 hover:text-white transition-all duration-200">
+              <span>Написать в Telegram</span>
+              <span className="text-xs">↗</span>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -636,4 +690,13 @@ function IntegrationCard({
   );
 }
 
-/* ===== ВСПОМОГАТЕЛЬНЫЕ КОМПОНЕНТЫ ===== */  
+function ChecklistItem({ step, text }: { step: number; text: string }) {
+  return (
+    <li className="flex gap-3">
+      <div className="mt-0.5 h-5 w-5 flex items-center justify-center rounded-full border border-neutral-700 text-[11px] text-neutral-300">
+        {step}
+      </div>
+      <p>{text}</p>
+    </li>
+  );
+}
