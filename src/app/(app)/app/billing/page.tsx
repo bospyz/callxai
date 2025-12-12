@@ -17,6 +17,7 @@ type BillingPlan = {
   badge?: string;
 };
 
+// тарифы для заявки (витрина)
 const PLANS: BillingPlan[] = [
   {
     id: "free",
@@ -35,7 +36,7 @@ const PLANS: BillingPlan[] = [
   {
     id: "start",
     name: "START",
-    price: "19 990 ₸",
+    price: "49 990 ₸",          // ← новая цена      // ← старая цена, будет зачёркнута
     period: "в месяц",
     description:
       "Когда фри-лимита уже мало и нужно смотреть на отдел по-взрослому.",
@@ -64,11 +65,120 @@ const PLANS: BillingPlan[] = [
   },
 ];
 
+// реальные планы из квоты
+type PlanKey = "free" | "start" | "pro" | "enterprise";
+
+type CallsQuota = {
+  plan: PlanKey;
+  limit: number | null; // null = безлимит
+  used: number;
+  remaining: number | null;
+};
+
+type QuotaApiResponse = {
+  ok: boolean;
+  quota: CallsQuota;
+};
+
+function formatDate(iso: string | null | undefined) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+}
+
+function getNextResetAt(): string {
+  const now = new Date();
+  const next = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  return next.toISOString();
+}
+
+function getPlanLabel(plan: PlanKey): string {
+  switch (plan) {
+    case "free":
+      return "FREE";
+    case "start":
+      return "START";
+    case "pro":
+      return "PRO";
+    case "enterprise":
+      return "ENTERPRISE";
+    default: {
+      // на случай расширения union-типа в будущем
+      const fallback = plan as string;
+      return fallback.toUpperCase();
+    }
+  }
+}
+
+
+function getPlanDescription(plan: PlanKey): string {
+  switch (plan) {
+    case "free":
+      return "Демо-режим: до 30 боевых звонков в месяц (≥ 30 сек).";
+    case "start":
+      return "Стартовый тариф: до 2 000 звонков в месяц для отдела.";
+    case "pro":
+      return "PRO: до 5 000 звонков в месяц и расширенная аналитика.";
+    case "enterprise":
+      return "Enterprise: безлимитный анализ звонков и кастомные условия.";
+    default:
+      return "";
+  }
+}
+
+function getUsagePercent(quota: CallsQuota): number {
+  if (quota.limit == null || quota.limit <= 0) return 0;
+  const used = Math.max(0, quota.used);
+  return Math.min(100, Math.round((used * 100) / quota.limit));
+}
+
 export default function BillingPage() {
-  const [selectedPlan, setSelectedPlan] = React.useState<BillingPlanId>("start");
+  const [selectedPlan, setSelectedPlan] =
+    React.useState<BillingPlanId>("start");
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [success, setSuccess] = React.useState<string | null>(null);
+
+  // квота из /api/billing/quota
+  const [quota, setQuota] = React.useState<CallsQuota | null>(null);
+  const [quotaLoading, setQuotaLoading] = React.useState(false);
+  const [quotaError, setQuotaError] = React.useState<string | null>(null);
+
+  async function fetchQuota() {
+    try {
+      setQuotaLoading(true);
+      setQuotaError(null);
+
+      const res = await fetch("/api/billing/quota", { method: "GET" });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Failed: ${res.status}`);
+      }
+
+      const json = (await res.json()) as QuotaApiResponse;
+
+      if (!json.ok || !json.quota) {
+        throw new Error("Некорректный ответ от /api/billing/quota");
+      }
+
+      setQuota(json.quota);
+    } catch (err: any) {
+      console.error("[Billing] quota error", err);
+      setQuotaError(err?.message ?? "Не удалось загрузить квоту");
+    } finally {
+      setQuotaLoading(false);
+    }
+  }
+
+  React.useEffect(() => {
+    void fetchQuota();
+  }, []);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -118,10 +228,12 @@ export default function BillingPage() {
   }
 
   const activePlan = PLANS.find((p) => p.id === selectedPlan) ?? PLANS[1];
+  const usagePercent = quota ? getUsagePercent(quota) : 0;
+  const nextResetAt = getNextResetAt();
 
   return (
-    <main className="min-h-screen w-full bg-black text-neutral-50">
-      <div className="mx-auto w-full max-w-7xl px-4 sm:px-8 lg:px-12 xl:px-16 pb-12 pt-8 space-y-8">
+<main className="min-h-screen w-full bg-black text-neutral-50">
+  <div className="w-full px-4 sm:px-8 lg:px-12 xl:px-16 pb-12 pt-8 space-y-8">
         {/* HEADER */}
         <header className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div className="space-y-1.5">
@@ -154,7 +266,7 @@ export default function BillingPage() {
           </div>
         </header>
 
-        {/* ОШИБКА / УСПЕХ */}
+        {/* ОШИБКА / УСПЕХ ЗАЯВКИ */}
         <div className="space-y-3">
           {success && (
             <div className="rounded-2xl border border-emerald-500/50 bg-emerald-950/60 px-4 py-3 text-sm text-emerald-100">
@@ -171,7 +283,133 @@ export default function BillingPage() {
           )}
         </div>
 
-        {/* ТАРИФЫ */}
+        {/* ТЕКУЩИЙ ТАРИФ И КВОТА */}
+        <section className="space-y-4">
+          <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-neutral-500">
+            Текущий тариф и квота
+          </h2>
+
+          <div className="grid gap-4 md:grid-cols-[2fr,3fr]">
+            <div className="rounded-2xl border border-neutral-800 bg-neutral-950/90 p-4 sm:p-5 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-neutral-500">
+                    План компании
+                  </p>
+                  <p className="mt-1 text-lg font-semibold">
+                    {quota ? getPlanLabel(quota.plan) : "—"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={fetchQuota}
+                  disabled={quotaLoading}
+                  className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-xs font-medium text-neutral-100 hover:bg-neutral-800 disabled:opacity-50"
+                >
+                  {quotaLoading ? "Обновляем…" : "Обновить квоту"}
+                </button>
+              </div>
+
+              <p className="mt-2 text-xs text-neutral-400">
+                {quota
+                  ? getPlanDescription(quota.plan)
+                  : "Подтягиваем данные по твоему тарифу и лимиту звонков…"}
+              </p>
+
+              <div className="mt-3 space-y-1 text-xs text-neutral-400">
+                <div className="flex justify-between">
+                  <span>Период биллинга:</span>
+                  <span>1 календарный месяц</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Сброс лимита:</span>
+                  <span>{formatDate(nextResetAt)}</span>
+                </div>
+              </div>
+
+              {quotaError && (
+                <p className="mt-2 text-[11px] text-red-400">
+                  Ошибка загрузки квоты: {quotaError}
+                </p>
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-neutral-800 bg-neutral-950/90 p-4 sm:p-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-neutral-500">
+                    Лимит звонков ≥ 30 сек в месяц
+                  </p>
+                  <p className="mt-1 text-base font-semibold">
+                    {quota
+                      ? quota.limit == null
+                        ? "Без лимита"
+                        : `${quota.used} / ${quota.limit} звонков`
+                      : "—"}
+                  </p>
+                </div>
+                {quota && quota.limit != null && (
+                  <p className="text-xs text-neutral-500">
+                    Осталось:{" "}
+                    <span className="text-neutral-100">
+                      {quota.remaining ?? 0}
+                    </span>
+                  </p>
+                )}
+              </div>
+
+              {quota && quota.limit != null && (
+                <>
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-neutral-900">
+                    <div
+                      className={`h-full rounded-full ${
+                        usagePercent < 70
+                          ? "bg-emerald-500"
+                          : usagePercent < 90
+                          ? "bg-amber-400"
+                          : "bg-red-500"
+                      }`}
+                      style={{ width: `${usagePercent}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[11px] text-neutral-500">
+                    <span>Использовано: {usagePercent}%</span>
+                    <span>
+                      {quota.remaining != null && quota.remaining <= 0
+                        ? "Лимит исчерпан"
+                        : quota.remaining != null && quota.remaining < 30
+                        ? "Мало остатка — можно апгрейднуть тариф"
+                        : "В пределах лимита"}
+                    </span>
+                  </div>
+                </>
+              )}
+
+              {quota && quota.limit === null && (
+                <p className="text-xs text-neutral-400">
+                  На тарифе ENTERPRISE лимит звонков не ограничен. Все звонки
+                  длительностью ≥ 30 секунд попадают в аналитику и отчёты.
+                </p>
+              )}
+
+              {!quota && !quotaError && (
+                <p className="text-xs text-neutral-500">
+                  Загружаем данные по квоте… Если что-то пойдёт не так, можно
+                  обновить блок кнопкой выше.
+                </p>
+              )}
+            </div>
+          </div>
+
+          <p className="text-[11px] text-neutral-500">
+            В квоту считаются только боевые звонки длительностью{" "}
+            <span className="font-semibold text-neutral-300">≥ 30 секунд</span>.
+            Короткие тестовые набора лучше делать с отдельного номера, чтобы не
+            сжигать лимит.
+          </p>
+        </section>
+
+        {/* ТАРИФЫ (ВИТРИНА) */}
         <section className="space-y-4">
           <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-neutral-500">
             1. Выбери тариф

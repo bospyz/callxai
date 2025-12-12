@@ -12,7 +12,9 @@ export type ProcessBatchResult = {
 
 /**
  * Обрабатывает пачку звонков в статусе NEW.
- * Простая версия без сложного распределения по воркерам.
+ * Простая версия без распределения по воркерам/очередям.
+ *
+ * Используется, например, из cron-ручки /api/cron/process-calls.
  */
 export async function processNewCallsBatch(
   limit: number = 10
@@ -33,8 +35,10 @@ export async function processNewCallsBatch(
   const errors: { callId: string; message: string }[] = [];
 
   for (const call of calls) {
-    // если нет audioUrl  помечаем ERROR и скипаем
-    if (!call.audioUrl) {
+    // если нет ни локального audioUrl, ни внешнего audioUrlExternal — помечаем ERROR и скипаем
+    const hasAudio = !!call.audioUrl || !!(call as any).audioUrlExternal;
+
+    if (!hasAudio) {
       skipped += 1;
       await db.call.update({
         where: { id: call.id },
@@ -42,7 +46,7 @@ export async function processNewCallsBatch(
           status: CallStatus.ERROR,
           meta: {
             ...(call.meta as any),
-            error: "Missing audioUrl for call",
+            error: "Missing audioUrl/audioUrlExternal for call",
           },
         },
       });

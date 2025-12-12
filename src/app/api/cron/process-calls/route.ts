@@ -1,15 +1,15 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+﻿// src/app/api/cron/process-calls/route.ts
+
+import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { CallStatus } from "@prisma/client";
-import { processCall } from "@/lib/call-analysis";
+import { enqueueCallProcessing } from "@/lib/workers/queue";
 
 const CRON_SECRET = process.env.CRON_SECRET;
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const secret = searchParams.get("secret");
-  const limitParam = searchParams.get("limit") ?? "10";
-  const limit = Math.max(1, Math.min(50, Number(limitParam) || 10));
 
   if (!CRON_SECRET || secret !== CRON_SECRET) {
     return NextResponse.json(
@@ -18,38 +18,33 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  // Берём только НОВЫЕ звонки
+  const limitParam = searchParams.get("limit") ?? "20";
+  const limit = Math.max(1, Math.min(200, Number(limitParam) || 20));
+
+  // Берём звонки в статусе NEW
   const calls = await db.call.findMany({
     where: { status: CallStatus.NEW },
     orderBy: { createdAt: "asc" },
     take: limit,
+    select: { id: true },
   });
 
-  let processed = 0;
-  const errors: { callId: string; message: string }[] = [];
+  let queued = 0;
 
-  for (const call of calls) {
-    try {
-      await processCall(call.id);
-      processed++;
-    } catch (err: any) {
-      errors.push({
-        callId: call.id,
-        message: String(err?.message || err),
-      });
+  for (const c of calls) {
+    // Для надёжности перед отправкой в очередь → ставим статус NEW
+    await db.call.update({
+      where: { id: c.id },
+      data: { status: CallStatus.NEW },
+    });
 
-      await db.call.update({
-        where: { id: call.id },
-        data: { status: CallStatus.ERROR },
-      });
-    }
+    await enqueueCallProcessing({ callId: c.id });
+    queued++;
   }
 
   return NextResponse.json({
     ok: true,
-    total: calls.length,
-    processed,
-    skipped: calls.length - processed,
-    errors,
+    queued,
+    message: `Queued ${queued} calls for AI processing`,
   });
 }

@@ -46,6 +46,11 @@ enum CallTaskStatus {
   ERROR
 }
 
+enum CallDirection {
+  INBOUND
+  OUTBOUND
+}
+
 model Company {
   id               String   @id @default(cuid())
   stripeCustomerId String?
@@ -54,7 +59,7 @@ model Company {
 
   name                String
   phone               String?
-  onboardingCompleted Boolean  @default(false)
+  onboardingCompleted Boolean @default(false)
 
   users           User[]
   managers        Manager[]
@@ -92,12 +97,15 @@ model PaymentRequest {
   phone       String
   email       String
 
+  // НОВЫЕ ПОЛЯ под форму биллинга
+  billingDetails String   // номер Kaspi / счёт / БИН и т.п.
+  comment        String?  // опциональный комментарий
+
   status PaymentRequestStatus @default(PENDING)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
-
 
 model Manager {
   id        String   @id @default(cuid())
@@ -108,12 +116,16 @@ model Manager {
   email String?
   phone String?
 
+  /// внешний ID пользователя в amoCRM
+  amoUserId String?
+
   companyId String
   company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   calls Call[]
 
   @@index([companyId])
+  @@index([companyId, amoUserId])
 }
 
 model Call {
@@ -127,21 +139,60 @@ model Call {
   managerId String?
   manager   Manager? @relation(fields: [managerId], references: [id])
 
+  /// внешний ID звонка в amoCRM / телефонии
   externalId String?
-  audioUrl   String?
-  duration   Int?
 
-  // ???????? ???? ?????? ?? amoCRM
+  /// URL записи (как в amo/телефонии)
+  audioUrlExternal String?
+
+  /// путь/URL на нашем сторидже (S3 и т.п.)
+  audioUrl String?
+
+  /// длительность в секундах
+  duration Int?
+
+  /// когда состоялся звонок (из amo) — это твой callDateTime
   occurredAt DateTime?
 
-  status     CallStatus @default(NEW)
+  /// направление звонка
+  direction CallDirection?
+
+  /// номер клиента (можно маскировать уже в UI)
+  clientPhone String?
+
+  /// номер / линия / ОКК, на который звонили
+  linePhone String?
+
+  /// amoCRM: ID сделки (lead)
+  leadId   String?
+  leadName String?
+  leadUrl  String?
+
+  /// amoCRM: воронка / проект (Arena Sunset / Arena Apart и т.д.)
+  pipelineId   String?
+  pipelineName String?
+
+  /// amoCRM: стадия воронки
+  stageId   String?
+  stageName String?
+
+  /// сумма сделки (для money-аналитики)
+  amountKzt Int?
+
+  status CallStatus @default(NEW)
+
+  /// старые поля — оставляем, чтобы не сломать существующий код
   transcript String?
   score      Int?
   sentiment  String?
   meta       Json?
 
-  // ????? ? ???????? ???????
+  // связь с задачами обработки
   tasks CallTask[]
+
+  // новые связи
+  callScore      CallScore?
+  callTranscript CallTranscript?
 
   @@unique([companyId, externalId])
   @@index([companyId])
@@ -150,6 +201,60 @@ model Call {
   @@index([createdAt])
   @@index([externalId])
   @@index([occurredAt])
+  @@index([leadId])
+}
+
+model CallScore {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  callId String @unique
+  call   Call   @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  /// общий AI Call Score 0–100
+  totalScore Int
+
+  /// детальные метрики 0–10
+  greetingScore     Int?
+  reactionScore     Int?
+  empathyScore      Int?
+  needsScore        Int?
+  presentationScore Int?
+  priceScore        Int?
+  objectionsScore   Int?
+  closingScore      Int?
+  clarityScore      Int?
+
+  /// процент речи менеджера, 0–100
+  talkRatioManager Float?
+
+  /// оценка “оптимальности” длины звонка
+  lengthScore Int?
+
+  /// краткое резюме звонка
+  summary String?
+
+  /// список проблем / ошибок (структурированный)
+  issues Json?
+
+  /// пояснения по каждой метрике (метрика → текст)
+  details Json?
+}
+
+model CallTranscript {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  callId String @unique
+  call   Call   @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  /// полный текст (если хочешь строкой)
+  rawTranscript String?
+
+  /// структурированная транскрипция:
+  /// спикеры, таймкоды, блоки (приветствие/вопросы/возражения/закрытие)
+  structured Json?
 }
 
 model Integration {
@@ -190,12 +295,12 @@ model AmoTrialUsage {
 }
 
 model CallTask {
-  id        String         @id @default(cuid())
-  createdAt DateTime       @default(now())
-  updatedAt DateTime       @updatedAt
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   callId String
-  call   Call             @relation(fields: [callId], references: [id], onDelete: Cascade)
+  call   Call   @relation(fields: [callId], references: [id], onDelete: Cascade)
 
   status   CallTaskStatus @default(NEW)
   error    String?

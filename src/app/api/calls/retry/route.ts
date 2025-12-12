@@ -1,6 +1,10 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+﻿// src/app/api/calls/create/route.ts
+
+import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { retrySingleCall } from "@/lib/workers/retry-queue";
+import { db } from "@/lib/db";
+import { CallStatus } from "@prisma/client";
+import { enqueueCallProcessing } from "@/lib/workers/queue";
 
 export async function POST(req: NextRequest) {
   const session = await auth();
@@ -9,29 +13,48 @@ export async function POST(req: NextRequest) {
     return new NextResponse("Unauthorized", { status: 401 });
   }
 
-  const companyId = (session.user as any).companyId as string | undefined;
+  const companyId = (session.user as any).companyId;
   if (!companyId) {
     return new NextResponse("No companyId in session", { status: 400 });
   }
 
   try {
-    const { callId } = await req.json();
+    const body = await req.json();
+    const { audioUrl, audioUrlExternal, duration, meta } = body;
 
-    if (!callId || typeof callId !== "string") {
-      return new NextResponse("callId is required", { status: 400 });
+    if (!audioUrl && !audioUrlExternal) {
+      return new NextResponse(
+        "audioUrl or audioUrlExternal is required",
+        { status: 400 }
+      );
     }
 
-    const result = await retrySingleCall(callId, companyId);
+    // 1. Создаём запись звонка
+    const call = await db.call.create({
+      data: {
+        companyId,
+        status: CallStatus.NEW,
+        audioUrl: audioUrl ?? null,
+        audioUrlExternal: audioUrlExternal ?? null,
+        duration: duration ?? null,
+        occurredAt: new Date(),
+        meta: meta ?? {},
+      },
+    });
+
+    // 2. Отправляем в очередь HYPERFLOW (download → split → ASR → analyze)
+    await enqueueCallProcessing({ callId: call.id });
 
     return NextResponse.json({
       ok: true,
-      callId,
-      result,
+      callId: call.id,
+      status: CallStatus.NEW,
+      message: "Call created and pushed to processing queue",
     });
   } catch (err: any) {
-    console.error("[API] /api/calls/retry error", err);
+    console.error("[API] /api/calls/create error", err);
     return new NextResponse(
-      err?.message ? `Retry error: ${err.message}` : "Retry error",
+      err?.message ?? "Internal Server Error",
       { status: 500 }
     );
   }

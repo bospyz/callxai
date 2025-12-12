@@ -7,44 +7,99 @@ export type PlanKey = "free" | "start" | "pro" | "enterprise";
 
 export type CallsQuota = {
   plan: PlanKey;
-  limit: number | null;     // null = безлимит
-  used: number;             // сколько звонков (>= 30 сек) уже есть за период
+  limit: number | null; // null = безлимит
+  used: number; // сколько звонков (>= 30 сек) уже есть за период
   remaining: number | null; // сколько ещё можно
 };
 
-// Нормализуем название плана из subscription.plan
+/**
+ * Нормализуем название плана из subscription.plan
+ * Примеры:
+ *  - "FREE", "free" -> free
+ *  - "start", "basic", "start-200" -> start
+ *  - "pro", "pro-2000" -> pro
+ *  - "enterprise", "ent" -> enterprise
+ */
 export function normalizePlan(raw?: string | null): PlanKey {
-  const v = (raw ?? "FREE").toLowerCase();
-  if (v === "start") return "start";
-  if (v === "pro") return "pro";
-  if (v === "enterprise" || v === "ent") return "enterprise";
+  if (!raw) return "free";
+  const v = raw.toLowerCase().trim();
+
+  if (v.includes("enterprise") || v === "ent") return "enterprise";
+  if (v.includes("pro")) return "pro";
+  if (v.includes("start") || v.includes("basic")) return "start";
+
   return "free";
 }
 
-// Лимит по плану (боевые звонки длительностью >= 30 сек)
+/**
+ * Лимит по плану (боевые звонки длительностью >= 30 сек).
+ * Здесь фиксируем твой прайсинг:
+ *  - free: 30
+ *  - start: 200
+ *  - pro: 2000
+ *  - enterprise: безлимит
+ *
+ * При желании можно завязать на ENV.
+ */
 export function getLimitForPlan(plan: PlanKey): number | null {
-  if (plan === "free") return 30;
-  if (plan === "start") return 2000;
-  if (plan === "pro") return 5000;
-  if (plan === "enterprise") return null; // без лимита
-  return 30;
-}
-
-// Текущий биллинг-период — календарный месяц
-function getCurrentPeriodStart() {
-  const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), 1);
+  switch (plan) {
+    case "free":
+      return 30;
+    case "start":
+      return 200;
+    case "pro":
+      return 2000;
+    case "enterprise":
+      return null; // без лимита
+    default:
+      return 30;
+  }
 }
 
 /**
- * Считает квоту по звонкам для компании:
- * - берёт активную подписку,
- * - считает звонки (duration >= 30) за текущий месяц,
- * - возвращает план / лимит / used / remaining.
+ * Текущий биллинг-период — календарный месяц.
  */
-export async function getRemainingCallsQuota(
+function getCurrentPeriodBounds() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  return { start, end };
+}
+
+/**
+ * Считает, сколько звонков компания уже использовала в текущем месяце.
+ * Учитываем только звонки длительностью >= 30 сек.
+ */
+async function countCompanyCallsForCurrentMonth(
   companyId: string
-): Promise<CallsQuota> {
+): Promise<number> {
+  const { start, end } = getCurrentPeriodBounds();
+
+  const used = await db.call.count({
+    where: {
+      companyId,
+      createdAt: {
+        gte: start,
+        lt: end,
+      },
+      duration: {
+        gte: 30,
+      },
+    },
+  });
+
+  return used;
+}
+
+/**
+ * БАЗОВАЯ ФУНКЦИЯ:
+ * Возвращает квоту звонков для компании:
+ *  - активная подписка → план
+ *  - лимит по плану
+ *  - used = звонки (duration >= 30) за текущий месяц
+ *  - remaining
+ */
+export async function getCallsQuota(companyId: string): Promise<CallsQuota> {
   const sub = await db.subscription.findFirst({
     where: {
       companyId,
@@ -66,19 +121,7 @@ export async function getRemainingCallsQuota(
     };
   }
 
-  const periodStart = getCurrentPeriodStart();
-
-  // считаем только звонки >= 30 сек
-  const used = await db.call.count({
-    where: {
-      companyId,
-      createdAt: { gte: periodStart },
-      duration: {
-        gte: 30,
-      },
-    },
-  });
-
+  const used = await countCompanyCallsForCurrentMonth(companyId);
   const remaining = Math.max(limit - used, 0);
 
   return {
@@ -90,6 +133,16 @@ export async function getRemainingCallsQuota(
 }
 
 /**
+ * Старое имя, чтобы не ломать существующий код.
+ * Теперь это просто обёртка над getCallsQuota.
+ */
+export async function getRemainingCallsQuota(
+  companyId: string
+): Promise<CallsQuota> {
+  return getCallsQuota(companyId);
+}
+
+/**
  * Helper для импорта: говорит, сколько ЗАПРОШЕННЫХ звонков
  * реально можно подтянуть с учётом квоты.
  */
@@ -97,7 +150,7 @@ export async function getQuotaForImport(
   companyId: string,
   requested: number
 ): Promise<{ allowed: number; quota: CallsQuota }> {
-  const quota = await getRemainingCallsQuota(companyId);
+  const quota = await getCallsQuota(companyId);
 
   if (quota.limit === null) {
     // безлимитный план — можно всё, что запросили
@@ -120,8 +173,8 @@ export async function getQuotaForImport(
 }
 
 /**
- * Старый helper, чтобы не ломать существующий код.
- * (возвращает "можно ли ещё грузить" в стиле твоей canCompanyIngestCall)
+ * Главный helper, который ты уже используешь:
+ * "можно ли ещё грузить один звонок" (Amo webhook, create, cron и т.п.).
  */
 export async function canCompanyIngestCall(companyId: string): Promise<{
   allowed: boolean;
@@ -130,7 +183,7 @@ export async function canCompanyIngestCall(companyId: string): Promise<{
   plan: PlanKey;
   reason: "unlimited" | "limit-reached" | "within-limit";
 }> {
-  const quota = await getRemainingCallsQuota(companyId);
+  const quota = await getCallsQuota(companyId);
 
   if (quota.limit === null) {
     return {
@@ -142,7 +195,9 @@ export async function canCompanyIngestCall(companyId: string): Promise<{
     };
   }
 
-  if ((quota.remaining ?? 0) <= 0) {
+  const remaining = quota.remaining ?? 0;
+
+  if (remaining <= 0) {
     return {
       allowed: false,
       limit: quota.limit,
@@ -155,7 +210,7 @@ export async function canCompanyIngestCall(companyId: string): Promise<{
   return {
     allowed: true,
     limit: quota.limit,
-    remaining: quota.remaining,
+    remaining,
     plan: quota.plan,
     reason: "within-limit",
   };

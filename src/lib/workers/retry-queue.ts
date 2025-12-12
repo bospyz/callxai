@@ -1,12 +1,12 @@
 ﻿// src/lib/workers/retry-queue.ts
 
 import { CallStatus } from "@prisma/client";
-import { db } from "../db";
-import { enqueueCallProcessing } from "./queue";
+import { db } from "@/lib/db";
+import { enqueueCallProcessing } from "@/lib/workers/queue";
 
 /**
  * Ретраим один конкретный звонок.
- * Если передан companyId  дополнительно проверяем принадлежность компании.
+ * Если передан companyId — дополнительно проверяем принадлежность компании.
  */
 export async function retrySingleCall(callId: string, companyId?: string) {
   const call = await db.call.findFirst({
@@ -36,7 +36,7 @@ export async function retrySingleCall(callId: string, companyId?: string) {
 
 /**
  * Ретраим ERROR-звонки для одной компании.
- * max позволяет ограничить количество ретраев (например 50 в cron-скрипте).
+ * max позволяет ограничить количество ретраев (например, 50 в cron-скрипте).
  */
 export async function retryFailedCallsForCompany(
   companyId: string,
@@ -70,8 +70,8 @@ export async function retryFailedCallsForCompany(
 }
 
 /**
- * Ретраим ВСЕ ERROR-звонки (по всем компаниям).
- * max  глобальный лимит (опционально).
+ * Ретраим ERROR-звонки по всем компаниям.
+ * max — глобальный лимит (опционально).
  */
 export async function retryFailedCalls(max?: number) {
   const failedCalls = await db.call.findMany({
@@ -99,8 +99,10 @@ export async function retryFailedCalls(max?: number) {
     retried: failedCalls.length,
   };
 }
+
 /**
- * Ретраим все звонки в статусе ERROR по всем компаниям.
+ * Ретраим все звонки в статусе ERROR по всем компаниям (без лимита).
+ * Удобно вызывать вручную из админки/скрипта.
  */
 export async function retryAllFailedCalls() {
   const failed = await db.call.findMany({
@@ -117,6 +119,7 @@ export async function retryAllFailedCalls() {
         status: CallStatus.NEW,
       },
     });
+
     await enqueueCallProcessing({ callId: c.id });
   }
 

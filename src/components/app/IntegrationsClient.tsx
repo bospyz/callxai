@@ -228,7 +228,9 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
 
   return (
     // Широкий контейнер — адаптив под все
-    <div className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8 xl:px-10 space-y-6">
+          <div className="w-full space-y-6">
+
+
       {/* Хедер интеграций */}
       <div className="border border-neutral-900/80 rounded-2xl bg-gradient-to-b from-black via-black to-neutral-950 px-5 sm:px-8 lg:px-10 pt-6 pb-4 w-full">
         <div className="flex flex-col gap-3">
@@ -274,7 +276,8 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
       </div>
 
       {/* Две колонки: слева amo, справа — «справка» и скоро-фичи */}
-      <div className="w-full grid gap-5 lg:grid-cols-[minmax(0,2.2fr)_minmax(0,1.4fr)] items-start">
+       <div className="w-full grid gap-5 lg:grid-cols-2 items-start">
+
         {/* ЛЕВАЯ КОЛОНКА — amoCRM + правила импорта */}
         <div className="space-y-5">
           <div className="relative rounded-2xl border border-neutral-800 bg-neutral-950/60 p-4 sm:p-5 shadow-[0_0_40px_rgba(15,23,42,0.85)] overflow-hidden w-full">

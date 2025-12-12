@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
 import { motion } from "framer-motion";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   LayoutDashboard,
@@ -70,7 +70,19 @@ export default function AppSidebar() {
   const router = useRouter();
   const { data: session } = useSession();
 
+  // ВАЖНО: mounted-флаг, чтобы не рендерить на сервере и избежать
+  // расхождений HTML между SSR и клиентом
+  const [mounted, setMounted] = useState(false);
   const [dockOpen, setDockOpen] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // На сервере и в момент гидрации ничего не рендерим — только на клиенте
+  if (!mounted) {
+    return null;
+  }
 
   const email = session?.user?.email ?? "demo@callxai.dev";
   const name = session?.user?.name ?? "Руководитель";
@@ -90,10 +102,7 @@ export default function AppSidebar() {
 
   return (
     <>
-      {/* MOBILE: без хедера — навигация только в нижней пилюле */}
-      {/* (освобождаем верх полностью) */}
-
-      {/* MOBILE: центральная нижняя пилюля с тремя полосками */}
+      {/* MOBILE: нижняя плавающая пилюля с доком */}
       <nav className="fixed bottom-4 inset-x-0 z-40 flex justify-center md:hidden pointer-events-none">
         <div className="relative pointer-events-auto">
           {/* Кнопка-лаунчер */}
@@ -172,7 +181,7 @@ export default function AppSidebar() {
         </div>
       </nav>
 
-      {/* DESKTOP: левый sticky-сайдбар как был */}
+      {/* DESKTOP: левый sticky-сайдбар */}
       <aside className="hidden md:flex md:sticky md:top-0 h-screen w-[96px] bg-gradient-to-b from-black via-[#050814] to-black px-4 py-5">
         <motion.div
           initial={{ opacity: 0, x: -8 }}
@@ -185,7 +194,7 @@ export default function AppSidebar() {
             backdrop-blur-2xl py-5
           "
         >
-          {/* Лого на десктопе оставили */}
+          {/* Лого */}
           <Link href="/app" className="group">
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white/10 border border-white/20 text-[11px] font-semibold tracking-[0.18em] text-white group-hover:bg-white/20 group-hover:border-white/40 transition">
               CX

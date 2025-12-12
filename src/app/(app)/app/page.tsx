@@ -11,8 +11,8 @@ type CallItem = {
   status: string;
   score: number | null;
   createdAt: string;
-  managerName?: string;
-  manager?: { name?: string };
+  managerName?: string | null;
+  manager?: { name?: string | null };
   [key: string]: any;
 };
 
@@ -21,6 +21,15 @@ type ManagerStat = {
   total: number;
   done: number;
   avgScore: number;
+};
+
+type PlanKey = "free" | "start" | "pro" | "enterprise";
+
+type CallsQuota = {
+  plan: PlanKey;
+  limit: number | null;
+  used: number;
+  remaining: number | null;
 };
 
 const PERIOD_OPTIONS: { value: string; label: string }[] = [
@@ -38,6 +47,9 @@ export default function AppDashboardPage() {
   const [exportLoading, setExportLoading] = useState(false);
 
   const [currentInsight, setCurrentInsight] = useState(0);
+
+  const [quota, setQuota] = useState<CallsQuota | null>(null);
+  const [quotaLoading, setQuotaLoading] = useState<boolean>(false);
 
   // Загрузка звонков по выбранному периоду
   useEffect(() => {
@@ -61,6 +73,29 @@ export default function AppDashboardPage() {
 
     load();
   }, [period]);
+
+  // Загрузка квоты по звонкам (лимит/использовано/остаток)
+  useEffect(() => {
+    async function loadQuota() {
+      try {
+        setQuotaLoading(true);
+        const res = await fetch("/api/billing/quota");
+        if (!res.ok) {
+          throw new Error("Failed to load quota");
+        }
+        const data = await res.json();
+        if (data?.quota) {
+          setQuota(data.quota as CallsQuota);
+        }
+      } catch (e) {
+        console.error("[Dashboard] quota load error", e);
+      } finally {
+        setQuotaLoading(false);
+      }
+    }
+
+    loadQuota();
+  }, []);
 
   const totalCalls = calls.length;
   const analyzedCalls = calls.filter((c) => c.status === "DONE").length;
@@ -126,7 +161,7 @@ export default function AppDashboardPage() {
   const topManagers = managerStats.slice(0, 5);
 
   // Доп. агрегации
-  const failedCalls = calls.filter((c) => c.status === "FAILED").length;
+  const failedCalls = calls.filter((c) => c.status === "ERROR").length;
   const newCalls = calls.filter((c) => c.status === "NEW").length;
   const processingCalls = calls.filter(
     (c) => c.status === "PROCESSING"
@@ -286,7 +321,7 @@ export default function AppDashboardPage() {
       slides.push({
         id: "live-5",
         badge: "⚠️ Не удалось разобрать",
-        title: `${failedCalls} звонков со статусом FAILED`,
+        title: `${failedCalls} звонков со статусом ERROR`,
         subtitle: "Стоит проверить эти записи",
         description:
           "Причины: битые файлы, пустые записи или нестандартный формат аудио. Проверь исходники и перезапусти анализ проблемных звонков.",
@@ -378,6 +413,27 @@ export default function AppDashboardPage() {
     setCurrentInsight(index);
   }
 
+function formatPlanName(plan?: PlanKey) {
+  if (!plan) return "—";
+
+  switch (plan) {
+    case "free":
+      return "FREE";
+    case "start":
+      return "START";
+    case "pro":
+      return "PRO";
+    case "enterprise":
+      return "ENTERPRISE";
+    default: {
+      // на будущее, если расширишь union-типы тарифов
+      const fallback = plan as string;
+      return fallback.toUpperCase();
+    }
+  }
+}
+
+
   return (
     <main className="min-h-screen w-full bg-black text-neutral-50">
       {/* pt/pb — чтобы не залезать под мобильный хедер и нижнюю навигацию */}
@@ -424,7 +480,7 @@ export default function AppDashboardPage() {
             <button
               onClick={handleExportExcel}
               disabled={exportLoading}
-              className="mt-1 inline-flex items-center justify-center gap-2 rounded-full border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-[11px] text-neutral-200 hover:border-emerald-400 hover:text-white hover:bg-neutral-900 transition disabled:opacity-60 disabled:cursor-not-allowed"
+              className="mt-1 inline-flex items-center justify-center gap-2 rounded-full border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-[11px] text-neutral-200 hover:border-emerald-400 hover:text:white hover:bg-neutral-900 transition disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {exportLoading ? "Готовим Excel…" : "Скачать Excel отчёт"}
             </button>
@@ -474,7 +530,7 @@ export default function AppDashboardPage() {
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.35 }}
-              className="grid gap-4 md:grid-cols-3 xl:grid-cols-3"
+              className="grid gap-4 md:grid-cols-4 xl:grid-cols-4"
             >
               {/* Всего звонков */}
               <div className="rounded-2xl border border-neutral-800 bg-gradient-to-br from-neutral-950 via-neutral-950 to-neutral-900/90 p-4 shadow-[0_18px_40px_rgba(0,0,0,0.7)] hover:shadow-[0_22px_60px_rgba(0,0,0,0.9)] transition-shadow">
@@ -540,6 +596,70 @@ export default function AppDashboardPage() {
                 <p className="mt-2 text-[11px] text-neutral-500">
                   Ниже 60 — тревога, выше 80 — сильная команда.
                 </p>
+              </div>
+
+              {/* Квота по звонкам */}
+              <div className="rounded-2xl border border-neutral-800 bg-gradient-to-br from-neutral-950 via-neutral-950 to-neutral-900/90 p-4 shadow-[0_18px_40px_rgba(0,0,0,0.7)] hover:shadow-[0_22px_60px_rgba(0,0,0,0.9)] transition-shadow">
+                <span className="text-[11px] uppercase text-neutral-500">
+                  Лимит звонков в месяц
+                </span>
+                {quotaLoading && (
+                  <div className="mt-2 h-6 w-24 rounded-full bg-neutral-900 animate-pulse" />
+                )}
+                {!quotaLoading && quota && (
+                  <>
+                    <div className="mt-2 text-sm">
+                      <p className="text-neutral-300">
+                        Тариф:{" "}
+                        <span className="font-semibold">
+                          {formatPlanName(quota.plan)}
+                        </span>
+                      </p>
+                      <p className="mt-1 text-[12px] text-neutral-400">
+                        Лимит:{" "}
+                        {quota.limit === null
+                          ? "безлимит"
+                          : `${quota.limit} звонков ≥ 30 сек`}
+                      </p>
+                      {quota.limit !== null && (
+                        <p className="mt-1 text-[12px] text-neutral-400">
+                          Использовано:{" "}
+                          <span className="text-neutral-100">
+                            {quota.used}
+                          </span>{" "}
+                          · Осталось:{" "}
+                          <span className="text-neutral-100">
+                            {quota.remaining ?? 0}
+                          </span>
+                        </p>
+                      )}
+                    </div>
+                    {quota.limit !== null && (
+                      <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-neutral-900">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-sky-400 to-emerald-400"
+                          style={{
+                            width: `${
+                              quota.limit > 0
+                                ? Math.min(
+                                    100,
+                                    Math.round(
+                                      (quota.used / quota.limit) * 100
+                                    )
+                                  )
+                                : 0
+                            }%`,
+                          }}
+                        />
+                      </div>
+                    )}
+                  </>
+                )}
+                {!quotaLoading && !quota && (
+                  <p className="mt-2 text-[12px] text-neutral-500">
+                    Информация о квоте недоступна.
+                  </p>
+                )}
               </div>
             </motion.div>
 
@@ -863,7 +983,7 @@ export default function AppDashboardPage() {
                         const statusStyles =
                           c.status === "DONE"
                             ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/40"
-                            : c.status === "FAILED"
+                            : c.status === "ERROR"
                             ? "bg-red-500/10 text-red-300 border-red-500/40"
                             : "bg-neutral-800/60 text-neutral-200 border-neutral-600/60";
 
@@ -912,7 +1032,7 @@ export default function AppDashboardPage() {
                     const statusStyles =
                       c.status === "DONE"
                         ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/40"
-                        : c.status === "FAILED"
+                        : c.status === "ERROR"
                         ? "bg-red-500/10 text-red-300 border-red-500/40"
                         : "bg-neutral-800/60 text-neutral-200 border-neutral-600/60";
 
