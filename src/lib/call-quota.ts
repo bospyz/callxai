@@ -7,19 +7,12 @@ export type PlanKey = "free" | "start" | "pro" | "enterprise";
 
 export type CallsQuota = {
   plan: PlanKey;
-  limit: number | null; // null = безлимит
-  used: number; // сколько звонков (>= 30 сек) уже есть за период
-  remaining: number | null; // сколько ещё можно
+  limit: number | null;       // null = безлимит
+  used: number;               // сколько "боевых" звонков (>= billableMin) уже есть в периоде
+  remaining: number | null;   // сколько ещё можно
+  billableMinDurationSec: number; // минимальная длительность, которую считаем по квоте
 };
 
-/**
- * Нормализуем название плана из subscription.plan
- * Примеры:
- *  - "FREE", "free" -> free
- *  - "start", "basic", "start-200" -> start
- *  - "pro", "pro-2000" -> pro
- *  - "enterprise", "ent" -> enterprise
- */
 export function normalizePlan(raw?: string | null): PlanKey {
   if (!raw) return "free";
   const v = raw.toLowerCase().trim();
@@ -32,33 +25,32 @@ export function normalizePlan(raw?: string | null): PlanKey {
 }
 
 /**
- * Лимит по плану (боевые звонки длительностью >= 30 сек).
- * Здесь фиксируем твой прайсинг:
- *  - free: 30
- *  - start: 200
- *  - pro: 2000
- *  - enterprise: безлимит
- *
- * При желании можно завязать на ENV.
+ * Fallback-лимиты (если в БД нет callsLimitPerMonth).
+ * Ты просил: START = 2000.
  */
 export function getLimitForPlan(plan: PlanKey): number | null {
   switch (plan) {
     case "free":
       return 30;
     case "start":
-      return 200;
-    case "pro":
       return 2000;
+    case "pro":
+      return 10000; // поставь как хочешь
     case "enterprise":
-      return null; // без лимита
+      return null;
     default:
       return 30;
   }
 }
 
 /**
- * Текущий биллинг-период — календарный месяц.
+ * Минимальная длительность "боевого" звонка для списания квоты.
+ * Можно сделать разной по тарифу — пока фикс 30 сек.
  */
+export function getBillableMinDurationSec(_plan: PlanKey): number {
+  return 30;
+}
+
 function getCurrentPeriodBounds() {
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -66,62 +58,60 @@ function getCurrentPeriodBounds() {
   return { start, end };
 }
 
-/**
- * Считает, сколько звонков компания уже использовала в текущем месяце.
- * Учитываем только звонки длительностью >= 30 сек.
- */
 async function countCompanyCallsForCurrentMonth(
-  companyId: string
+  companyId: string,
+  billableMinDurationSec: number
 ): Promise<number> {
   const { start, end } = getCurrentPeriodBounds();
 
-  const used = await db.call.count({
+  return db.call.count({
     where: {
       companyId,
-      createdAt: {
-        gte: start,
-        lt: end,
-      },
-      duration: {
-        gte: 30,
-      },
+      createdAt: { gte: start, lt: end },
+      duration: { gte: billableMinDurationSec },
     },
   });
-
-  return used;
 }
 
-/**
- * БАЗОВАЯ ФУНКЦИЯ:
- * Возвращает квоту звонков для компании:
- *  - активная подписка → план
- *  - лимит по плану
- *  - used = звонки (duration >= 30) за текущий месяц
- *  - remaining
- */
 export async function getCallsQuota(companyId: string): Promise<CallsQuota> {
   const sub = await db.subscription.findFirst({
-    where: {
-      companyId,
-      status: SubscriptionStatus.ACTIVE,
-    },
+    where: { companyId, status: SubscriptionStatus.ACTIVE },
     orderBy: { createdAt: "desc" },
   });
 
   const plan = normalizePlan(sub?.plan);
-  const limit = getLimitForPlan(plan);
+  const billableMinDurationSec = getBillableMinDurationSec(plan);
 
-  if (limit === null) {
-    // ENTERPRISE — без ограничений
+  // ENTERPRISE — безлимит
+  if (plan === "enterprise") {
     return {
       plan,
       limit: null,
       used: 0,
       remaining: null,
+      billableMinDurationSec,
     };
   }
 
-  const used = await countCompanyCallsForCurrentMonth(companyId);
+  // Лимит: сначала из БД (callsLimitPerMonth), иначе fallback по плану
+  const limitFromDb =
+    typeof (sub as any)?.callsLimitPerMonth === "number"
+      ? (sub as any).callsLimitPerMonth
+      : null;
+
+  const limit = limitFromDb ?? getLimitForPlan(plan);
+
+  if (limit === null) {
+    return {
+      plan,
+      limit: null,
+      used: 0,
+      remaining: null,
+      billableMinDurationSec,
+    };
+  }
+
+  const used = await countCompanyCallsForCurrentMonth(companyId, billableMinDurationSec);
   const remaining = Math.max(limit - used, 0);
 
   return {
@@ -129,23 +119,14 @@ export async function getCallsQuota(companyId: string): Promise<CallsQuota> {
     limit,
     used,
     remaining,
+    billableMinDurationSec,
   };
 }
 
-/**
- * Старое имя, чтобы не ломать существующий код.
- * Теперь это просто обёртка над getCallsQuota.
- */
-export async function getRemainingCallsQuota(
-  companyId: string
-): Promise<CallsQuota> {
+export async function getRemainingCallsQuota(companyId: string): Promise<CallsQuota> {
   return getCallsQuota(companyId);
 }
 
-/**
- * Helper для импорта: говорит, сколько ЗАПРОШЕННЫХ звонков
- * реально можно подтянуть с учётом квоты.
- */
 export async function getQuotaForImport(
   companyId: string,
   requested: number
@@ -153,29 +134,15 @@ export async function getQuotaForImport(
   const quota = await getCallsQuota(companyId);
 
   if (quota.limit === null) {
-    // безлимитный план — можно всё, что запросили
-    return {
-      allowed: requested,
-      quota,
-    };
+    return { allowed: requested, quota };
   }
 
   const remaining = Math.max(quota.remaining ?? 0, 0);
   const allowed = Math.max(Math.min(requested, remaining), 0);
 
-  return {
-    allowed,
-    quota: {
-      ...quota,
-      remaining,
-    },
-  };
+  return { allowed, quota: { ...quota, remaining } };
 }
 
-/**
- * Главный helper, который ты уже используешь:
- * "можно ли ещё грузить один звонок" (Amo webhook, create, cron и т.п.).
- */
 export async function canCompanyIngestCall(companyId: string): Promise<{
   allowed: boolean;
   limit: number | null;
@@ -186,32 +153,14 @@ export async function canCompanyIngestCall(companyId: string): Promise<{
   const quota = await getCallsQuota(companyId);
 
   if (quota.limit === null) {
-    return {
-      allowed: true,
-      limit: null,
-      remaining: null,
-      plan: quota.plan,
-      reason: "unlimited",
-    };
+    return { allowed: true, limit: null, remaining: null, plan: quota.plan, reason: "unlimited" };
   }
 
   const remaining = quota.remaining ?? 0;
 
   if (remaining <= 0) {
-    return {
-      allowed: false,
-      limit: quota.limit,
-      remaining: 0,
-      plan: quota.plan,
-      reason: "limit-reached",
-    };
+    return { allowed: false, limit: quota.limit, remaining: 0, plan: quota.plan, reason: "limit-reached" };
   }
 
-  return {
-    allowed: true,
-    limit: quota.limit,
-    remaining,
-    plan: quota.plan,
-    reason: "within-limit",
-  };
+  return { allowed: true, limit: quota.limit, remaining, plan: quota.plan, reason: "within-limit" };
 }

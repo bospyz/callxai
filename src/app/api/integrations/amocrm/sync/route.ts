@@ -1,8 +1,7 @@
 ﻿import { NextRequest, NextResponse } from "next/server";
 import { requireAuthWithCompany } from "@/lib/auth-guard";
-import { db } from "@/lib/db";
 import { syncAmoRecentCalls } from "@/lib/amocrm";
-import { getQuotaForImport } from "@/lib/call-quota";
+import { getQuotaForImport, getCallsQuota } from "@/lib/call-quota";
 
 type SyncBody = {
   limit?: number;
@@ -15,11 +14,9 @@ function buildLimitReachedMessage(plan: string, limit: number | null) {
   if (limit == null) {
     return "Тариф ENTERPRISE — звонков безлимит, но импорт сейчас недоступен.";
   }
-
   if (plan === "free") {
     return `Лимит в ${limit} бесплатных звонков исчерпан. Подключи тариф START, чтобы продолжить анализ звонков.`;
   }
-
   return `Лимит в ${limit} звонков по текущему тарифу исчерпан. Обнови тариф или свяжись с поддержкой, чтобы увеличить лимит.`;
 }
 
@@ -27,9 +24,6 @@ export async function POST(req: NextRequest) {
   try {
     const { companyId } = await requireAuthWithCompany();
 
-    // ----------------------
-    // Чтение и нормализация body
-    // ----------------------
     let body: SyncBody = {};
     try {
       body = (await req.json()) as SyncBody;
@@ -37,33 +31,37 @@ export async function POST(req: NextRequest) {
       body = {};
     }
 
-    // Лимит запрашиваемых звонков
+    // ----------------------
+    // body normalize
+    // ----------------------
     let requestedLimit = Number(body.limit) || 50;
-    if (requestedLimit < 10) requestedLimit = 10;
-    if (requestedLimit > 500) requestedLimit = 500;
+    if (requestedLimit < 1) requestedLimit = 1;
+    // START должен уметь 2000 за прогон
+    if (requestedLimit > 2000) requestedLimit = 2000;
 
-    // Кол-во дней (для фильтрации коротких звонков)
     let days = Number(body.days) || 7;
     if (days < 1) days = 1;
     if (days > 90) days = 90;
 
     const skipShort = body.skipShort === true;
 
-    let minDurationSec = Number(body.minDurationSec) || 30;
-    if (minDurationSec < 5) minDurationSec = 5;
-    if (minDurationSec > 3600) minDurationSec = 3600;
-
     // ----------------------
-    // Проверяем квоту
+    // квота
     // ----------------------
     const { allowed: effectiveLimit, quota } = await getQuotaForImport(
       companyId,
       requestedLimit
     );
 
+    const billableMin = quota.billableMinDurationSec ?? 30;
+
+    // minDurationSec не должен быть ниже billableMin (иначе ты будешь "пропускать" меньше, чем квота считает)
+    let minDurationSec = Number(body.minDurationSec) || billableMin;
+    if (minDurationSec < billableMin) minDurationSec = billableMin;
+    if (minDurationSec > 3600) minDurationSec = 3600;
+
     const limitReached =
-      quota.limit !== null &&
-      (effectiveLimit <= 0 || (quota.remaining ?? 0) <= 0);
+      quota.limit !== null && (effectiveLimit <= 0 || (quota.remaining ?? 0) <= 0);
 
     if (limitReached) {
       return NextResponse.json(
@@ -78,7 +76,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Если квота позволяет, но effectiveLimit всё равно 0 → ничего не тянем
     if (effectiveLimit <= 0) {
       return NextResponse.json(
         {
@@ -100,39 +97,33 @@ export async function POST(req: NextRequest) {
     }
 
     // ----------------------
-    // Выполняем импорт звонков из AmoCRM
+    // импорт из amo
+    // ВАЖНО: мы НЕ удаляем короткие из базы.
+    // Лучше: фильтровать их ДО сохранения (см. пункт 2.2 ниже).
     // ----------------------
+    const startedAt = new Date();
+
     const amoResult = await syncAmoRecentCalls({
       companyId,
       limit: effectiveLimit,
+      days,
+      skipShort,
+      minDurationSec,
+      billableMinDurationSec: billableMin,
     } as any);
 
     const createdCount =
       typeof amoResult?.created === "number" ? amoResult.created : 0;
 
-    // ----------------------
-    // Опционально удаляем короткие звонки
-    // ----------------------
-    let skippedShort = 0;
-
-    if (skipShort) {
-      const since = new Date();
-      since.setDate(since.getDate() - days);
-
-      const del = await db.call.deleteMany({
-        where: {
-          companyId,
-          createdAt: { gte: since },
-          duration: { lt: minDurationSec },
-        },
-      });
-
-      skippedShort = del.count;
-    }
+const amoAny = amoResult as any;
+const skippedShort =
+  typeof amoAny?.skippedShort === "number" ? amoAny.skippedShort : 0;
 
     // ----------------------
-    // Ответ API
+    // вернём обновлённую квоту после импорта
     // ----------------------
+    const quotaAfter = await getCallsQuota(companyId);
+
     return NextResponse.json(
       {
         ok: true,
@@ -143,11 +134,12 @@ export async function POST(req: NextRequest) {
         minDurationSec: skipShort ? minDurationSec : null,
         created: createdCount,
         skippedShort,
-        plan: quota.plan,
-        quota,
-        freeLimit: quota.limit, // для совместимости
-        freeRemaining: quota.remaining,
-        message: `Импорт выполнен: создано ${createdCount} новых звонков из AmoCRM. Фильтр коротких: ${skippedShort}.`,
+        plan: quotaAfter.plan,
+        quota: quotaAfter,
+        freeLimit: quotaAfter.limit,
+        freeRemaining: quotaAfter.remaining,
+        message: `Импорт выполнен: создано ${createdCount} новых звонков из AmoCRM. Пропущено коротких: ${skippedShort}.`,
+        debug: { startedAt: startedAt.toISOString() },
       },
       { status: 200 }
     );
@@ -159,19 +151,14 @@ export async function POST(req: NextRequest) {
         {
           ok: false,
           code: "AMO_TOKEN_EXPIRED",
-          error:
-            "Токен AmoCRM истёк или невалиден. Переподключи интеграцию AmoCRM.",
+          error: "Токен AmoCRM истёк или невалиден. Переподключи интеграцию AmoCRM.",
         },
         { status: 401 }
       );
     }
 
-    if (msg.startsWith("Unauthorized")) {
-      return new NextResponse("Unauthorized", { status: 401 });
-    }
-    if (msg.includes("No companyId in session")) {
-      return new NextResponse("No companyId in session", { status: 400 });
-    }
+    if (msg.startsWith("Unauthorized")) return new NextResponse("Unauthorized", { status: 401 });
+    if (msg.includes("No companyId in session")) return new NextResponse("No companyId in session", { status: 400 });
 
     console.error("[API] /api/integrations/amocrm/sync error", err);
     return new NextResponse("Internal Server Error", { status: 500 });
