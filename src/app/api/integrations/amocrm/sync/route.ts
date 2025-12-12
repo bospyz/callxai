@@ -1,7 +1,8 @@
 ﻿import { NextRequest, NextResponse } from "next/server";
 import { requireAuthWithCompany } from "@/lib/auth-guard";
+import { db } from "@/lib/db";
 import { syncAmoRecentCalls } from "@/lib/amocrm";
-import { getQuotaForImport, getCallsQuota } from "@/lib/call-quota";
+import { getCallsQuota, getQuotaForImport } from "@/lib/call-quota";
 
 type SyncBody = {
   limit?: number;
@@ -10,11 +11,25 @@ type SyncBody = {
   minDurationSec?: number;
 };
 
+type AmoSyncResult = {
+  ok: boolean;
+  created: number;
+  message?: string;
+  skippedShort?: number;
+};
+
+function clampInt(v: any, min: number, max: number, fallback: number) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
 function buildLimitReachedMessage(plan: string, limit: number | null) {
+  const p = String(plan || "free").toLowerCase();
   if (limit == null) {
     return "Тариф ENTERPRISE — звонков безлимит, но импорт сейчас недоступен.";
   }
-  if (plan === "free") {
+  if (p === "free") {
     return `Лимит в ${limit} бесплатных звонков исчерпан. Подключи тариф START, чтобы продолжить анализ звонков.`;
   }
   return `Лимит в ${limit} звонков по текущему тарифу исчерпан. Обнови тариф или свяжись с поддержкой, чтобы увеличить лимит.`;
@@ -24,6 +39,7 @@ export async function POST(req: NextRequest) {
   try {
     const { companyId } = await requireAuthWithCompany();
 
+    // читаем body безопасно
     let body: SyncBody = {};
     try {
       body = (await req.json()) as SyncBody;
@@ -31,46 +47,49 @@ export async function POST(req: NextRequest) {
       body = {};
     }
 
-    // ----------------------
-    // body normalize
-    // ----------------------
-    let requestedLimit = Number(body.limit) || 50;
-    if (requestedLimit < 1) requestedLimit = 1;
-    // START должен уметь 2000 за прогон
-    if (requestedLimit > 2000) requestedLimit = 2000;
+    // получаем квоту
+    const quota = await getCallsQuota(companyId);
+    const planKey = quota.plan; // "free" | "start" | "pro" | "enterprise"
 
-    let days = Number(body.days) || 7;
-    if (days < 1) days = 1;
-    if (days > 90) days = 90;
+    // billable min (сейчас у тебя это 30 по логике call-quota)
+    // если позже добавишь на тарифах другое — просто подтяни сюда.
+    const billableMin = 30;
 
-    const skipShort = body.skipShort === true;
+    // ---------- ПРАВИЛА ИМПОРТА (сервер — источник правды) ----------
+    let requestedLimit = clampInt(body.limit, 1, 5000, 50);
+    let days = clampInt(body.days, 1, 90, 7);
+    let skipShort = body.skipShort === true;
+    let minDurationSec = clampInt(body.minDurationSec, 5, 3600, billableMin);
 
-    // ----------------------
-    // квота
-    // ----------------------
-    const { allowed: effectiveLimit, quota } = await getQuotaForImport(
+    // FREE: фиксируем правила полностью
+    if (planKey === "free") {
+      requestedLimit = 30;     // ровно 30 "боевых" за прогон (если осталось меньше — getQuotaForImport обрежет)
+      days = 7;                // фикс период
+      skipShort = true;        // фикс фильтр коротких
+      minDurationSec = billableMin; // фикс 30 сек (или billableMin)
+    } else {
+      // платные: не ниже billableMin (если включён фильтр)
+      if (skipShort) minDurationSec = Math.max(minDurationSec, billableMin);
+    }
+
+    // ---------- КВОТА: сколько реально можно импортировать ----------
+    const { allowed: effectiveLimit, quota: quotaForRun } = await getQuotaForImport(
       companyId,
       requestedLimit
     );
 
-    const billableMin = quota.billableMinDurationSec ?? 30;
-
-    // minDurationSec не должен быть ниже billableMin (иначе ты будешь "пропускать" меньше, чем квота считает)
-    let minDurationSec = Number(body.minDurationSec) || billableMin;
-    if (minDurationSec < billableMin) minDurationSec = billableMin;
-    if (minDurationSec > 3600) minDurationSec = 3600;
-
     const limitReached =
-      quota.limit !== null && (effectiveLimit <= 0 || (quota.remaining ?? 0) <= 0);
+      quotaForRun.limit !== null &&
+      (effectiveLimit <= 0 || (quotaForRun.remaining ?? 0) <= 0);
 
     if (limitReached) {
       return NextResponse.json(
         {
           ok: false,
           code: "LIMIT_REACHED",
-          error: buildLimitReachedMessage(quota.plan, quota.limit),
-          plan: quota.plan,
-          quota,
+          error: buildLimitReachedMessage(quotaForRun.plan, quotaForRun.limit),
+          plan: quotaForRun.plan,
+          quota: quotaForRun,
         },
         { status: 402 }
       );
@@ -87,8 +106,8 @@ export async function POST(req: NextRequest) {
           minDurationSec: skipShort ? minDurationSec : null,
           created: 0,
           skippedShort: 0,
-          plan: quota.plan,
-          quota,
+          plan: quotaForRun.plan,
+          quota: quotaForRun,
           message:
             "Доступных звонков по квоте не осталось. Обнови тариф, чтобы продолжить синхронизацию.",
         },
@@ -96,50 +115,56 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ----------------------
-    // импорт из amo
-    // ВАЖНО: мы НЕ удаляем короткие из базы.
-    // Лучше: фильтровать их ДО сохранения (см. пункт 2.2 ниже).
-    // ----------------------
-    const startedAt = new Date();
+    // safety cap на платных, чтобы не уронить бэк (по желанию)
+    let safeEffectiveLimit = effectiveLimit;
+    if (planKey !== "free") safeEffectiveLimit = Math.min(safeEffectiveLimit, 2000);
 
-    const amoResult = await syncAmoRecentCalls({
+    // ---------- ИМПОРТ ИЗ AMO ----------
+    const amoResult = (await syncAmoRecentCalls({
       companyId,
-      limit: effectiveLimit,
-      days,
-      skipShort,
-      minDurationSec,
-      billableMinDurationSec: billableMin,
-    } as any);
+      limit: safeEffectiveLimit,
+      // если ты умеешь в amocrm sync фильтровать по дате/длительности — передай туда:
+      // days,
+      // minDurationSec: skipShort ? minDurationSec : undefined,
+    } as any)) as AmoSyncResult;
 
-    const createdCount =
-      typeof amoResult?.created === "number" ? amoResult.created : 0;
+    const createdCount = typeof amoResult?.created === "number" ? amoResult.created : 0;
 
-const amoAny = amoResult as any;
-const skippedShort =
-  typeof amoAny?.skippedShort === "number" ? amoAny.skippedShort : 0;
+    // ---------- ОПЦИОНАЛЬНО: ЧИСТИМ КОРОТКИЕ (если ты пока фильтруешь пост-фактум) ----------
+    // В идеале: фильтровать ДО записи в db, но если сейчас так — оставляем.
+    let skippedShort = 0;
 
-    // ----------------------
-    // вернём обновлённую квоту после импорта
-    // ----------------------
-    const quotaAfter = await getCallsQuota(companyId);
+    if (skipShort) {
+      const since = new Date();
+      since.setDate(since.getDate() - days);
+
+      const del = await db.call.deleteMany({
+        where: {
+          companyId,
+          createdAt: { gte: since },
+          duration: { lt: minDurationSec },
+        },
+      });
+
+      skippedShort = del.count;
+    }
+
+    // ---------- ВОЗВРАЩАЕМ ОБНОВЛЁННУЮ КВОТУ ПОСЛЕ ИМПОРТА ----------
+    const updatedQuota = await getCallsQuota(companyId);
 
     return NextResponse.json(
       {
         ok: true,
         requestedLimit,
-        limit: effectiveLimit,
+        limit: safeEffectiveLimit,
         days,
         skipShort,
         minDurationSec: skipShort ? minDurationSec : null,
         created: createdCount,
         skippedShort,
-        plan: quotaAfter.plan,
-        quota: quotaAfter,
-        freeLimit: quotaAfter.limit,
-        freeRemaining: quotaAfter.remaining,
-        message: `Импорт выполнен: создано ${createdCount} новых звонков из AmoCRM. Пропущено коротких: ${skippedShort}.`,
-        debug: { startedAt: startedAt.toISOString() },
+        plan: updatedQuota.plan,
+        quota: updatedQuota,
+        message: `Импорт выполнен: создано ${createdCount} новых звонков из amoCRM. Коротких удалено: ${skippedShort}.`,
       },
       { status: 200 }
     );
@@ -151,7 +176,8 @@ const skippedShort =
         {
           ok: false,
           code: "AMO_TOKEN_EXPIRED",
-          error: "Токен AmoCRM истёк или невалиден. Переподключи интеграцию AmoCRM.",
+          error:
+            "Токен AmoCRM истёк или невалиден. Переподключи интеграцию AmoCRM.",
         },
         { status: 401 }
       );
