@@ -71,6 +71,19 @@ model Company {
   @@index([name])
 }
 
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
 model User {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())
@@ -83,6 +96,8 @@ model User {
 
   companyId String
   company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  passwordResetTokens PasswordResetToken[] // <-- ДОБАВЬ ЭТО
 }
 
 model PaymentRequest {
@@ -98,8 +113,8 @@ model PaymentRequest {
   email       String
 
   // НОВЫЕ ПОЛЯ под форму биллинга
-  billingDetails String   // номер Kaspi / счёт / БИН и т.п.
-  comment        String?  // опциональный комментарий
+  billingDetails String // номер Kaspi / счёт / БИН и т.п.
+  comment        String? // опциональный комментарий
 
   status PaymentRequestStatus @default(PENDING)
 
@@ -284,6 +299,8 @@ model Subscription {
   seats            Int                @default(1)
   pricePerMonthKZT Int                @default(0)
   status           SubscriptionStatus @default(ACTIVE)
+
+  callsLimitPerMonth Int @default(200) // <-- ЛИМИТ звонков в месяц
 
   @@index([companyId, status])
 }

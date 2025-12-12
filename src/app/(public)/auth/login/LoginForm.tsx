@@ -1,24 +1,50 @@
 ﻿"use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { signIn } from "next-auth/react";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import Link from "next/link";
 
+function humanizeAuthError(code: string) {
+  // Подстрой под свои кейсы/коды, которые реально прилетают
+  if (code === "CredentialsSignin") {
+    return "Проверь почту и пароль — что-то не совпало.";
+  }
+  if (code === "AccessDenied") {
+    return "Доступ запрещён. Проверь права или обратись в поддержку.";
+  }
+  if (code === "Configuration") {
+    return "Ошибка конфигурации авторизации. Сообщи в поддержку.";
+  }
+  return code; // на всякий — покажем как есть
+}
+
 export default function LoginForm() {
   const searchParams = useSearchParams();
   const router = useRouter();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const error = searchParams.get("error");
+  // Ошибка из query-параметра (например, редиректом вернулось ?error=CredentialsSignin)
+  const queryError = searchParams.get("error");
+
+  // Ошибка, которую мы ставим сами (например, с signIn redirect:false)
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const errorText = useMemo(() => {
+    const code = formError || queryError;
+    return code ? humanizeAuthError(code) : null;
+  }, [formError, queryError]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setFormError(null);
     setLoading(true);
+
     try {
       const res = await signIn("credentials", {
         redirect: false,
@@ -27,13 +53,21 @@ export default function LoginForm() {
         callbackUrl: "/app",
       });
 
-      if (!res) return;
+      // Если NextAuth почему-то вернул null/undefined
+      if (!res) {
+        setFormError("UnknownError");
+        return;
+      }
 
       if (res.ok) {
-        router.push("/app");
-      } else {
-        console.error(res.error);
+        router.push(res.url || "/app");
+        return;
       }
+
+      // res.error обычно: "CredentialsSignin" и т.п.
+      setFormError(res.error || "UnknownError");
+    } catch (err) {
+      setFormError("NetworkError");
     } finally {
       setLoading(false);
     }
@@ -48,7 +82,7 @@ export default function LoginForm() {
         <div className="absolute inset-0 opacity-[0.08] [background-image:radial-gradient(circle_at_1px_1px,#27272a_1px,transparent_0)] [background-size:16px_16px]" />
       </div>
 
-      {/* Статичный «остров» хедера сверху */}
+      {/* Хедер */}
       <header className="sticky top-0 z-20 flex items-center justify-between px-4 sm:px-10 py-4 backdrop-blur-xl bg-black/40 border-b border-neutral-900/60">
         <div className="flex items-center gap-3">
           <div className="h-8 w-8 rounded-xl bg-gradient-to-br from-emerald-400 to-lime-300 shadow-[0_0_40px_rgba(74,222,128,0.7)] flex items-center justify-center text-xs font-black tracking-tight text-black">
@@ -130,15 +164,13 @@ export default function LoginForm() {
             </div>
 
             <p className="text-[11px] text-neutral-500">
-              Уже зарегистрирован? Просто войди — твои данные и отчёты уже в
-              системе.
+              Уже зарегистрирован? Просто войди — твои данные и отчёты уже в системе.
             </p>
           </section>
 
           {/* Правая часть — форма логина */}
           <section>
             <div className="relative">
-              {/* Градиентный обвод карточки */}
               <div className="absolute -inset-[1px] rounded-3xl bg-gradient-to-br from-emerald-500/50 via-lime-300/40 to-sky-500/40 opacity-60 blur-[3px]" />
               <div className="relative rounded-3xl border border-neutral-800/90 bg-neutral-950/90 px-6 sm:px-7 py-6 sm:py-7 shadow-[0_18px_60px_rgba(0,0,0,0.85)] backdrop-blur-xl">
                 <div className="mb-5">
@@ -153,27 +185,25 @@ export default function LoginForm() {
                   </p>
                 </div>
 
-                {error && (
+                {errorText && (
                   <div className="mb-4 rounded-xl border border-red-500/40 bg-red-500/10 px-3 py-2 text-[11px] text-red-300">
                     <div className="flex items-center gap-2">
                       <span className="h-1.5 w-1.5 rounded-full bg-red-400" />
-                      <span className="font-medium">
-                        Ошибка авторизации
-                      </span>
+                      <span className="font-medium">Ошибка авторизации</span>
                     </div>
                     <p className="mt-1.5 leading-snug">
-                      {error === "CredentialsSignin"
-                        ? "Проверь почту и пароль — что-то не совпало."
-                        : error}
+                      {errorText === "NetworkError"
+                        ? "Проблема с сетью/сервером. Попробуй ещё раз."
+                        : errorText === "UnknownError"
+                        ? "Не удалось выполнить вход. Попробуй ещё раз."
+                        : errorText}
                     </p>
                   </div>
                 )}
 
                 <form onSubmit={handleSubmit} className="space-y-3.5">
                   <div className="space-y-1.5">
-                    <label className="text-[11px] text-neutral-400">
-                      Email
-                    </label>
+                    <label className="text-[11px] text-neutral-400">Email</label>
                     <Input
                       type="email"
                       value={email}
@@ -187,9 +217,7 @@ export default function LoginForm() {
                   </div>
 
                   <div className="space-y-1.5">
-                    <label className="text-[11px] text-neutral-400">
-                      Пароль
-                    </label>
+                    <label className="text-[11px] text-neutral-400">Пароль</label>
                     <Input
                       type="password"
                       value={password}
@@ -217,6 +245,25 @@ export default function LoginForm() {
                   >
                     {loading ? "Входим в аккаунт..." : "Войти в CallX"}
                   </Button>
+
+                  {/* Политика / Условия */}
+                  <p className="pt-2 text-[10px] leading-relaxed text-neutral-500">
+                    Нажимая «Войти», ты соглашаешься с{" "}
+                    <Link
+                      href="/terms"
+                      className="text-neutral-200 hover:text-white underline underline-offset-2"
+                    >
+                      Условиями использования
+                    </Link>{" "}
+                    и{" "}
+                    <Link
+                      href="/privacy"
+                      className="text-neutral-200 hover:text-white underline underline-offset-2"
+                    >
+                      Политикой конфиденциальности
+                    </Link>
+                    .
+                  </p>
                 </form>
 
                 <div className="mt-5 flex flex-col gap-2 text-[11px] text-neutral-500">
@@ -230,8 +277,7 @@ export default function LoginForm() {
                     </Link>
                   </div>
                   <p className="text-[10px] text-neutral-600">
-                    Входя в систему, ты подтверждаешь, что не боишься честной
-                    статистики по своим продажам.
+                    Входя в систему, ты подтверждаешь, что не боишься честной статистики по своим продажам.
                   </p>
                 </div>
               </div>
