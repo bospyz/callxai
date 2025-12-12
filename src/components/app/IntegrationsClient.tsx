@@ -59,52 +59,52 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
 
   const isConnected = !!amo?.enabled && !!amo?.config?.domain;
 
-  useEffect(() => {
-    async function loadQuota() {
-      try {
-        const res = await fetch("/api/billing/quota");
-        if (!res.ok) return;
-        const json = (await res.json()) as QuotaResponse;
-        setQuota(json);
-      } catch {
-        // без квоты просто остаёмся на дефолтах, не ломаем UI
-      }
+  // ---- загрузка квоты (переиспользуем после sync)
+  const loadQuota = async () => {
+    try {
+      const res = await fetch("/api/billing/quota", { cache: "no-store" });
+      if (!res.ok) return;
+      const json = (await res.json()) as QuotaResponse;
+      setQuota(json);
+    } catch {
+      // ignore
     }
+  };
+
+  useEffect(() => {
     loadQuota();
   }, []);
 
-  const plan = quota?.plan ?? "FREE";
+  const plan = (quota?.plan ?? "FREE").toUpperCase();
   const quotaLimit = typeof quota?.limit === "number" ? quota.limit : null;
   const quotaRemaining =
     typeof quota?.remaining === "number" ? quota.remaining : null;
   const billableMin = quota?.billableMinDurationSec ?? 30;
 
-  // максимальный лимит для инпута (только из бэка)
+  // max для инпута: сначала remaining, потом limit, потом дефолт
   const maxLimitForInput =
-    plan === "FREE"
-      ? quotaLimit ?? 30
-      : quotaLimit ?? quotaRemaining ?? 2000; // для платных, если бэк не ограничил, даём до 2000 за прогон
+    quotaRemaining !== null
+      ? quotaRemaining
+      : quotaLimit !== null
+      ? quotaLimit
+      : plan === "FREE"
+      ? 30
+      : 2000;
 
-  // как только приехала квота — подстраиваем настройки
+  // как только приехала квота — подстраиваем настройки (без фиксаций и без сбросов)
   useEffect(() => {
     if (!quota) return;
 
-    // фиксируем минимальную боевую длительность
-    setMinDurationSec(billableMin);
+    // не сбрасываем на 30 каждый раз, а только поднимаем минимум если ниже тарифа
+    setMinDurationSec((prev) => Math.max(prev, billableMin));
 
-    if (plan === "FREE") {
-      // FREE: ровно limit из бэка (например, 30)
-      const base = quotaLimit ?? 30;
-      setLimit(base);
-    } else {
-      // платные: дефолт = remaining, потом limit / руками
-      const base =
-        quotaRemaining ??
-        quotaLimit ??
-        Math.min(2000, maxLimitForInput || 2000);
-      setLimit(base);
-    }
-  }, [quota, plan, billableMin, quotaLimit, quotaRemaining, maxLimitForInput]);
+    // limit: если текущий больше доступного — уменьшаем; иначе оставляем
+    setLimit((prev) => {
+      const base = maxLimitForInput;
+      const safePrev = typeof prev === "number" && prev > 0 ? prev : base;
+      return safePrev > base ? base : safePrev;
+    });
+  }, [quota, billableMin, maxLimitForInput]);
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -145,10 +145,12 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
           "Интеграция amoCRM подключена. Анализ звонков появится в разделах «Звонки» и «Аналитика»."
       );
 
-      // открываем политику в новой вкладке
       if (typeof window !== "undefined") {
         window.open("/legal/privacy", "_blank");
       }
+
+      // обновим квоту на всякий
+      await loadQuota();
     } catch (err: any) {
       setError(err?.message || "Ошибка сети при подключении");
     } finally {
@@ -161,20 +163,32 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
     setSyncMessage(null);
 
     try {
+      // если remaining известен и 0 — сразу стоп
+      if (quotaRemaining === 0) {
+        setSyncError("Лимит по тарифу исчерпан. Обнови подписку.");
+        return;
+      }
+
       setSyncLoading(true);
 
-      // жёстко завязываем лимит на то, что сказал бэк
-      let safeLimit = limit;
+      // безопасный лимит: не меньше 1
+      let safeLimit = Math.max(1, Number(limit) || 1);
 
-      if (plan === "FREE") {
-        // FREE: всегда ровно квота (например, 30), без свободы
-        safeLimit = quotaLimit ?? 30;
-      } else if (quotaRemaining !== null) {
-        // платные: не выходим за remaining
-        safeLimit = Math.min(limit, quotaRemaining);
-      } else if (quotaLimit !== null) {
-        // если remaining нет, но limit есть — не выходим за limit
-        safeLimit = Math.min(limit, quotaLimit);
+      // главный ограничитель — remaining (и для FREE тоже)
+      if (quotaRemaining !== null) safeLimit = Math.min(safeLimit, quotaRemaining);
+
+      // если remaining не пришёл, ограничим лимитом тарифа (если есть)
+      if (quotaRemaining === null && quotaLimit !== null) {
+        safeLimit = Math.min(safeLimit, quotaLimit);
+      }
+
+      // cap "за прогон" на платных (если хочешь)
+      if (plan !== "FREE") safeLimit = Math.min(safeLimit, 2000);
+
+      // защита от пустого запроса
+      if (safeLimit <= 0) {
+        setSyncError("Нечего импортировать: доступный лимит = 0.");
+        return;
       }
 
       const body: any = {
@@ -183,9 +197,9 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
         skipShort,
       };
 
-      // всегда используем минимальную «боевую» длительность по тарифу
+      // отправляем реальное значение, которое выбрал юзер (но не ниже тарифа)
       if (skipShort) {
-        body.minDurationSec = billableMin;
+        body.minDurationSec = Math.max(minDurationSec, billableMin);
       }
 
       const res = await fetch("/api/integrations/amocrm/sync", {
@@ -197,9 +211,7 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        throw new Error(
-          data.error || "Не удалось синхронизировать звонки из amoCRM"
-        );
+        throw new Error(data.error || "Не удалось синхронизировать звонки из amoCRM");
       }
 
       const created =
@@ -211,14 +223,15 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
         data.message ||
         "Синхронизировали последние звонки из amoCRM и обновили базу.";
 
-      if (created !== undefined) {
-        msg += ` Импортировано: ${created}.`;
-      }
+      if (created !== undefined) msg += ` Импортировано: ${created}.`;
       if (skipShort && skippedShort !== undefined) {
-        msg += ` Пропущено коротких звонков (< ${billableMin} сек.): ${skippedShort}.`;
+        msg += ` Пропущено коротких (< ${Math.max(minDurationSec, billableMin)} сек.): ${skippedShort}.`;
       }
 
       setSyncMessage(msg);
+
+      // ВАЖНО: обновляем квоту после импорта, чтобы remaining менялся
+      await loadQuota();
     } catch (err: any) {
       setSyncError(err?.message || "Ошибка при синхронизации звонков");
     } finally {
@@ -227,10 +240,7 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
   }
 
   return (
-    // Широкий контейнер — адаптив под все
-          <div className="w-full space-y-6">
-
-
+    <div className="w-full space-y-6">
       {/* Хедер интеграций */}
       <div className="border border-neutral-900/80 rounded-2xl bg-gradient-to-b from-black via-black to-neutral-950 px-5 sm:px-8 lg:px-10 pt-6 pb-4 w-full">
         <div className="flex flex-col gap-3">
@@ -263,10 +273,11 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
                 <span className="text-[11px] text-neutral-500">
                   Тариф:{" "}
                   <span className="text-neutral-200 font-medium">
-                    {plan.toUpperCase()}
+                    {plan}
                   </span>{" "}
                   · лимит{" "}
-                  {quotaLimit !== null ? quotaLimit : "безлимит"} звонков ≥{" "}
+                  {quotaLimit !== null ? quotaLimit : "безлимит"} · осталось{" "}
+                  {quotaRemaining !== null ? quotaRemaining : "∞"} · считаем ≥{" "}
                   {billableMin} сек.
                 </span>
               )}
@@ -275,13 +286,13 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
         </div>
       </div>
 
-      {/* Две колонки: слева amo, справа — «справка» и скоро-фичи */}
-       <div className="w-full grid gap-5 lg:grid-cols-2 items-start">
-
-        {/* ЛЕВАЯ КОЛОНКА — amoCRM + правила импорта */}
+      {/* Две колонки */}
+      <div className="w-full grid gap-5 lg:grid-cols-2 items-start">
+        {/* ЛЕВАЯ КОЛОНКА */}
         <div className="space-y-5">
           <div className="relative rounded-2xl border border-neutral-800 bg-neutral-950/60 p-4 sm:p-5 shadow-[0_0_40px_rgba(15,23,42,0.85)] overflow-hidden w-full">
             <div className="pointer-events-none absolute -right-20 -top-20 h-40 w-40 rounded-full bg-emerald-500/5 blur-3xl" />
+
             <div className="flex items-start justify-between gap-3 mb-3">
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
@@ -296,6 +307,7 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
                   Основная CRM для рынка Казахстана
                 </div>
               </div>
+
               <div
                 className={`px-3 py-1 rounded-full text-[11px] font-medium border ${
                   isConnected
@@ -365,6 +377,7 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
                   />
                 </div>
               </div>
+
               <div className="flex flex-col gap-1.5">
                 <div className="flex flex-wrap items-center gap-2">
                   <button
@@ -378,6 +391,7 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
                     Мы не создаём сделки, только читаем звонки для анализа.
                   </span>
                 </div>
+
                 <span className="text-[10px] text-neutral-500">
                   Нажимая «Подключить amoCRM», ты принимаешь{" "}
                   <Link
@@ -386,8 +400,7 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
                   >
                     политику конфиденциальности CALLX
                   </Link>
-                  . Мы не воруем базы, не трогаем сделки и не рассылаем
-                  спам-контакты.
+                  .
                 </span>
               </div>
             </form>
@@ -401,19 +414,20 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
               {quota && (
                 <div className="text-[11px] text-neutral-500">
                   На тарифе{" "}
-                  <span className="font-semibold text-neutral-200">
-                    {plan.toUpperCase()}
-                  </span>{" "}
+                  <span className="font-semibold text-neutral-200">{plan}</span>{" "}
                   считаем только звонки ≥{" "}
                   <span className="font-semibold text-neutral-200">
                     {billableMin} сек
                   </span>
-                  . За один прогон подтянем{" "}
-                  {plan === "FREE" ? "ровно" : "не больше"}{" "}
+                  . Осталось{" "}
+                  <span className="font-semibold text-neutral-200">
+                    {quotaRemaining !== null ? quotaRemaining : "∞"}
+                  </span>
+                  . За один прогон подтянем до{" "}
                   <span className="font-semibold text-neutral-200">
                     {maxLimitForInput}
-                  </span>{" "}
-                  таких звонков.
+                  </span>
+                  .
                 </div>
               )}
 
@@ -426,11 +440,9 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
                     type="number"
                     min={1}
                     max={maxLimitForInput || undefined}
-                    disabled={plan === "FREE"}
-                    className="w-full rounded-xl border border-neutral-800 bg-black/60 px-3 py-1.5 text-sm text-neutral-100 disabled:opacity-50 focus:border-emerald-400 focus:outline-none focus:ring-0"
+                    className="w-full rounded-xl border border-neutral-800 bg-black/60 px-3 py-1.5 text-sm text-neutral-100 focus:border-emerald-400 focus:outline-none focus:ring-0"
                     value={limit}
                     onChange={(e) => {
-                      if (plan === "FREE") return;
                       const v = Number(e.target.value);
                       if (Number.isNaN(v)) return;
                       const clamped = maxLimitForInput
@@ -440,9 +452,9 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
                     }}
                   />
                   <div className="text-[11px] text-neutral-500">
-                    {plan === "FREE"
-                      ? "Фикс: весь бесплатный лимит за прогон (из квоты)."
-                      : `Не больше ${maxLimitForInput} звонков за прогон по текущему тарифу.`}
+                    {quotaRemaining !== null
+                      ? `Можно добрать ещё ${quotaRemaining} звонков в этом месяце.`
+                      : `Не больше ${maxLimitForInput} за прогон.`}
                   </div>
                 </div>
 
@@ -494,9 +506,7 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
                       onChange={(e) => {
                         const v = Number(e.target.value);
                         if (Number.isNaN(v)) return;
-                        setMinDurationSec(
-                          Math.max(billableMin, Math.min(v, 3600))
-                        );
+                        setMinDurationSec(Math.max(billableMin, Math.min(v, 3600)));
                       }}
                     />
                     <span className="text-[11px] text-neutral-500">
@@ -518,17 +528,15 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
                     : "Синхронизировать звонки из amoCRM"}
                 </button>
                 <span className="text-[11px] text-neutral-500">
-                  Тянем только «боевые» звонки ≥ {billableMin} сек и не выходим
-                  за лимит тарифа.
+                  Тянем только «боевые» звонки ≥ {billableMin} сек и не выходим за лимит тарифа.
                 </span>
               </div>
             </div>
           </div>
         </div>
 
-        {/* ПРАВАЯ КОЛОНКА — чек-лист, «скоро» и поддержка */}
+        {/* ПРАВАЯ КОЛОНКА — как у тебя (без изменений) */}
         <div className="space-y-4">
-          {/* Чек-лист подключения */}
           <div className="rounded-2xl border border-neutral-800 bg-neutral-950/60 p-4 sm:p-5 shadow-[0_0_40px_rgba(15,23,42,0.75)]">
             <div className="flex items-center justify-between gap-2 mb-3">
               <div>
@@ -563,7 +571,6 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
             </ul>
           </div>
 
-          {/* Телефония / SIP — скоро */}
           <IntegrationCard
             label="Телефония / SIP"
             subtitle="Через провайдера или Asterisk"
@@ -575,7 +582,6 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
             actions={[{ label: "Оставить заявку", primary: true }]}
           />
 
-          {/* Ручная загрузка — скоро */}
           <IntegrationCard
             label="Ручная загрузка записей"
             subtitle="Для старта без интеграций"
@@ -587,7 +593,6 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
             actions={[{ label: "Загрузить записи (скоро)", primary: true }]}
           />
 
-          {/* Поддержка */}
           <div className="rounded-2xl border border-neutral-800 bg-gradient-to-br from-emerald-500/18 via-emerald-500/7 to-transparent p-4 sm:p-5">
             <div className="text-[11px] uppercase tracking-[0.22em] text-emerald-300 mb-1">
               поддержка
