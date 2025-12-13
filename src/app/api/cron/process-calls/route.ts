@@ -3,7 +3,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { CallStatus } from "@prisma/client";
-import { enqueueCallProcessing } from "@/lib/workers/queue";
+import { enqueueCallTask } from "@/lib/workers/task-queue";
 
 const CRON_SECRET = process.env.CRON_SECRET;
 
@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
       data: { status: CallStatus.NEW },
     });
 
-    await enqueueCallProcessing({ callId: c.id });
+    await enqueueCallTask(c.id);
     queued++;
   }
 

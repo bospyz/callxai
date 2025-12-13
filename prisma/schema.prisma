@@ -140,7 +140,7 @@ model Manager {
   calls Call[]
 
   @@index([companyId])
-  @@index([companyId, amoUserId])
+
 
   // ✅ ВАЖНО: уникальность менеджера в рамках компании по amoUserId
   @@unique([companyId, amoUserId], name: "companyId_amoUserId")
@@ -319,7 +319,8 @@ model CallTask {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  callId String
+callId String @unique
+
   call   Call   @relation(fields: [callId], references: [id], onDelete: Cascade)
 
   status   CallTaskStatus @default(NEW)

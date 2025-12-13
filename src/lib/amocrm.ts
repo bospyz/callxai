@@ -6,7 +6,7 @@ import {
 } from "@prisma/client";
 
 import { canCompanyIngestCall } from "@/lib/call-quota";
-import { enqueueCallProcessing } from "@/lib/workers/queue";
+import { enqueueCallTask } from "@/lib/workers/task-queue";
 import { resolveManagerIdForAmoUser } from "@/lib/manager-mapping";
 
 const AMO_STUB_MODE = process.env.AMO_STUB_MODE === "true";
@@ -215,7 +215,7 @@ export async function syncAmoRecentCalls(opts: {
       },
     });
 
-    await enqueueCallProcessing({ callId: call.id });
+    await enqueueCallTask(call.id);
     created++;
   }
 
@@ -298,7 +298,7 @@ export async function handleAmoCallWebhook(opts: {
     },
   });
 
-  await enqueueCallProcessing({ callId: call.id });
+  await enqueueCallTask(call.id);
 
   return call.id;
 }

@@ -2,7 +2,7 @@
 
 import { CallStatus } from "@prisma/client";
 import { db } from "@/lib/db";
-import { enqueueCallProcessing } from "@/lib/workers/queue";
+import { enqueueCallTask } from "@/lib/workers/task-queue";
 
 /**
  * Ретраим один конкретный звонок.
@@ -27,7 +27,7 @@ export async function retrySingleCall(callId: string, companyId?: string) {
     },
   });
 
-  await enqueueCallProcessing({ callId: call.id });
+  await enqueueCallTask(call.id);
 
   return {
     retried: 1,
@@ -61,7 +61,7 @@ export async function retryFailedCallsForCompany(
       },
     });
 
-    await enqueueCallProcessing({ callId: c.id });
+    await enqueueCallTask(c.id);
   }
 
   return {
@@ -92,7 +92,7 @@ export async function retryFailedCalls(max?: number) {
       },
     });
 
-    await enqueueCallProcessing({ callId: c.id });
+    await enqueueCallTask(c.id);
   }
 
   return {
@@ -120,7 +120,7 @@ export async function retryAllFailedCalls() {
       },
     });
 
-    await enqueueCallProcessing({ callId: c.id });
+    await enqueueCallTask(c.id);
   }
 
   return { retried: failed.length };

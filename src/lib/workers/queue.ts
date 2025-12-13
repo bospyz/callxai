@@ -1,5 +1,7 @@
 ﻿// src/lib/workers/queue.ts
 
+
+import { enqueueCallTask } from "@/lib/workers/task-queue";
 import { CallStatus } from "@prisma/client";
 import { db } from "@/lib/db";
 import { processCall } from "@/lib/call-analysis";
@@ -17,19 +19,8 @@ let isProcessing = false;
  * download → transcribe → analyze → DONE.
  */
 export async function enqueueCallProcessing(job: CallJob): Promise<void> {
-  queue.push(job);
-
-  logInfo("enqueueCallProcessing", {
-    context: "call-queue.enqueue",
-    extra: {
-      callId: job.callId,
-      queueSize: queue.length,
-    },
-  });
-
-  if (!isProcessing) {
-    void processNext();
-  }
+  // DEPRECATED: redirect to DB-backed queue.
+  await enqueueCallTask(job.callId);
 }
 
 /**
@@ -106,3 +97,4 @@ async function processNext(): Promise<void> {
     }
   }
 }
+

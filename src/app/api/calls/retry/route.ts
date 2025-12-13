@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { CallStatus } from "@prisma/client";
-import { enqueueCallProcessing } from "@/lib/workers/queue";
+import { enqueueCallTask } from "@/lib/workers/task-queue";
 
 export async function POST(req: NextRequest) {
   const session = await auth();
@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
     });
 
     // 2. Отправляем в очередь HYPERFLOW (download → split → ASR → analyze)
-    await enqueueCallProcessing({ callId: call.id });
+    await enqueueCallTask(call.id);
 
     return NextResponse.json({
       ok: true,

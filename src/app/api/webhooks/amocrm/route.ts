@@ -2,7 +2,7 @@
 import { db } from "@/lib/db";
 import { CallStatus, IntegrationType } from "@prisma/client";
 import { canCompanyIngestCall } from "@/lib/call-quota";
-import { enqueueCallProcessing } from "@/lib/workers/queue";
+import { enqueueCallTask } from "@/lib/workers/task-queue";
 import { resolveManagerIdForAmoUser } from "@/lib/manager-mapping";
 
 
@@ -220,7 +220,7 @@ export async function POST(req: Request) {
       },
     });
 
-    await enqueueCallProcessing({ callId: call.id });
+    await enqueueCallTask(call.id);
 
     return NextResponse.json(
       {
