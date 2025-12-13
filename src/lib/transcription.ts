@@ -36,8 +36,21 @@ function validateAudioUrl(raw: string): URL {
   return url;
 }
 
+function isValidHttpUrl(value: string): boolean {
+  try {
+    const u = new URL(value);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export async function transcribeAudioFromUrl(audioUrl: string): Promise<string> {
-  const url = validateAudioUrl(audioUrl);
+  
+  if (!audioUrl || !isValidHttpUrl(audioUrl)) {
+    throw new Error("Invalid audioUrl for transcription");
+  }
+const url = validateAudioUrl(audioUrl);
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -97,3 +110,4 @@ export async function transcribeAudioFromUrl(audioUrl: string): Promise<string> 
   // Когда подключишь Whisper / ASR  сюда вставится вызов.
   return "[TRANSCRIPTION_PENDING] audio downloaded safely, ASR not yet connected";
 }
+

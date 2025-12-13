@@ -5,6 +5,61 @@ import { CallStatus } from "@prisma/client";
 import { getOpenAIClient } from "./openai";
 import { transcribeAudioFromUrl } from "./transcription";
 
+/* ===== AI PARSING HELPERS ===== */
+
+function clampInt(v: any, min: number, max: number, fallback: number): number {
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.round(n)));
+}
+
+function clampFloat(v: any, min: number, max: number, fallback: number): number {
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+// Extract first valid JSON object from LLM output
+function extractFirstJsonObject(text: string): string | null {
+  if (!text) return null;
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return null;
+  return text.slice(start, end + 1);
+}
+
+function normalizeAnalysis(parsed: any): CallAnalysisResult {
+  const rawMetrics = parsed?.metrics ?? {};
+
+  const metrics: Record<MetricKey, MetricScore> = {
+    greeting: { score: clampInt(rawMetrics?.greeting?.score, 0, 10, 0), comment: String(rawMetrics?.greeting?.comment ?? "") },
+    reaction: { score: clampInt(rawMetrics?.reaction?.score, 0, 10, 0), comment: String(rawMetrics?.reaction?.comment ?? "") },
+    empathy: { score: clampInt(rawMetrics?.empathy?.score, 0, 10, 0), comment: String(rawMetrics?.empathy?.comment ?? "") },
+    needs: { score: clampInt(rawMetrics?.needs?.score, 0, 10, 0), comment: String(rawMetrics?.needs?.comment ?? "") },
+    presentation: { score: clampInt(rawMetrics?.presentation?.score, 0, 10, 0), comment: String(rawMetrics?.presentation?.comment ?? "") },
+    price: { score: clampInt(rawMetrics?.price?.score, 0, 10, 0), comment: String(rawMetrics?.price?.comment ?? "") },
+    objections: { score: clampInt(rawMetrics?.objections?.score, 0, 10, 0), comment: String(rawMetrics?.objections?.comment ?? "") },
+    closing: { score: clampInt(rawMetrics?.closing?.score, 0, 10, 0), comment: String(rawMetrics?.closing?.comment ?? "") },
+    clarity: { score: clampInt(rawMetrics?.clarity?.score, 0, 10, 0), comment: String(rawMetrics?.clarity?.comment ?? "") },
+    length: { score: clampInt(rawMetrics?.length?.score, 0, 10, 0), comment: String(rawMetrics?.length?.comment ?? "") },
+  };
+
+  return {
+    score: clampInt(parsed?.score, 0, 100, 0),
+    sentiment:
+      parsed?.sentiment === "positive" || parsed?.sentiment === "negative"
+        ? parsed.sentiment
+        : "neutral",
+    summary: typeof parsed?.summary === "string" ? parsed.summary : "",
+    metrics,
+    issues: Array.isArray(parsed?.issues) ? parsed.issues.map(String).slice(0, 25) : [],
+    managerSpeechPercent: clampFloat(parsed?.managerSpeechPercent, 0, 100, 0),
+    raw: parsed ?? {},
+  };
+}
+
+/* ===== END HELPERS ===== */
+
 const openai = getOpenAIClient();
 
 /**
@@ -48,31 +103,6 @@ const STUB_TRANSCRIPT =
 export async function analyzeTranscript(
   transcript: string
 ): Promise<CallAnalysisResult> {
-  if (!transcript || !transcript.trim()) {
-    return {
-      score: 0,
-      sentiment: "neutral",
-      summary: "Транскрипт пустой. Анализ не выполнен.",
-      metrics: {
-        greeting: { score: 0, comment: "Нет данных." },
-        reaction: { score: 0, comment: "Нет данных." },
-        empathy: { score: 0, comment: "Нет данных." },
-        needs: { score: 0, comment: "Нет данных." },
-        presentation: { score: 0, comment: "Нет данных." },
-        price: { score: 0, comment: "Нет данных." },
-        objections: { score: 0, comment: "Нет данных." },
-        closing: { score: 0, comment: "Нет данных." },
-        clarity: { score: 0, comment: "Нет данных." },
-        length: { score: 0, comment: "Нет данных." },
-      },
-      issues: ["Пустой транскрипт звонка."],
-      managerSpeechPercent: 0,
-      raw: {
-        reason: "empty_transcript",
-      },
-    };
-  }
-
   // stub-режим для dev / отсутствия ключа
   if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY === "dummy-openai-key") {
     return {
@@ -197,82 +227,28 @@ export async function analyzeTranscript(
     throw new Error("Empty response from OpenAI when analyzing transcript");
   }
 
-  let parsed: any;
+    let parsed: any;
   try {
-    parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (typeof raw === "string") {
+      const extracted = extractFirstJsonObject(raw) ?? raw;
+      parsed = JSON.parse(extracted);
+    } else {
+      parsed = raw;
+    }
   } catch (err) {
     console.error("[call-analysis] Failed to parse JSON from OpenAI", err, raw);
-    // fallback, чтобы не падать
-    return {
+    return normalizeAnalysis({
       score: 0,
       sentiment: "neutral",
       summary: "Не удалось разобрать ответ AI, используется fallback-анализ.",
-      metrics: {
-        greeting: { score: 0, comment: "" },
-        reaction: { score: 0, comment: "" },
-        empathy: { score: 0, comment: "" },
-        needs: { score: 0, comment: "" },
-        presentation: { score: 0, comment: "" },
-        price: { score: 0, comment: "" },
-        objections: { score: 0, comment: "" },
-        closing: { score: 0, comment: "" },
-        clarity: { score: 0, comment: "" },
-        length: { score: 0, comment: "" },
-      },
+      metrics: {},
       issues: ["Ошибка парсинга JSON от модели."],
       managerSpeechPercent: 0,
       raw,
-    };
+    });
   }
 
-  const score =
-    typeof parsed.score === "number" &&
-    parsed.score >= 0 &&
-    parsed.score <= 100
-      ? parsed.score
-      : 0;
-
-  const sentiment: "positive" | "neutral" | "negative" =
-    parsed.sentiment === "positive" ||
-    parsed.sentiment === "neutral" ||
-    parsed.sentiment === "negative"
-      ? parsed.sentiment
-      : "neutral";
-
-  const rawMetrics = parsed.metrics ?? {};
-  const metrics: Record<MetricKey, MetricScore> = {
-    greeting: rawMetrics.greeting ?? { score: 0, comment: "" },
-    reaction: rawMetrics.reaction ?? { score: 0, comment: "" },
-    empathy: rawMetrics.empathy ?? { score: 0, comment: "" },
-    needs: rawMetrics.needs ?? { score: 0, comment: "" },
-    presentation: rawMetrics.presentation ?? { score: 0, comment: "" },
-    price: rawMetrics.price ?? { score: 0, comment: "" },
-    objections: rawMetrics.objections ?? { score: 0, comment: "" },
-    closing: rawMetrics.closing ?? { score: 0, comment: "" },
-    clarity: rawMetrics.clarity ?? { score: 0, comment: "" },
-    length: rawMetrics.length ?? { score: 0, comment: "" },
-  };
-
-  const managerSpeechPercent =
-    typeof parsed.managerSpeechPercent === "number"
-      ? parsed.managerSpeechPercent
-      : 0;
-
-  const issues: string[] = Array.isArray(parsed.issues)
-    ? parsed.issues.map((x: any) => String(x))
-    : [];
-
-  const summary = typeof parsed.summary === "string" ? parsed.summary : "";
-
-  return {
-    score,
-    sentiment,
-    summary,
-    metrics,
-    issues,
-    managerSpeechPercent,
-    raw: parsed,
-  };
+  return normalizeAnalysis(parsed);
 }
 
 /**
@@ -302,7 +278,7 @@ if (!call) {
         },
       },
     });
-    return;
+return;
   }
 not found`);
   }
@@ -317,7 +293,22 @@ not found`);
     if (audioUrl) {
       try {
         transcript = await transcribeAudioFromUrl(audioUrl);
-      } catch (err) {
+      
+        if (!transcript || !transcript.trim()) {
+          await db.call.update({
+            where: { id: callId },
+            data: {
+              status: CallStatus.DONE,
+              meta: {
+                ...(call.meta as any),
+                skipped: true,
+                reason: "empty_transcript",
+              },
+            },
+          });
+return;
+        }
+} catch (err) {
         console.error("[processCall] transcription error", err);
         // НЕ ставим ERROR-статус, просто логируем в meta
         await db.call.update({
@@ -329,7 +320,7 @@ not found`);
             },
           },
         });
-      }
+}
     }
   }
 
@@ -341,7 +332,53 @@ not found`);
   // 3) Анализ текста звонка
   const analysis = await analyzeTranscript(transcript);
 
-  await db.call.update({
+  
+  // Persist structured tables (for future analytics & UI)
+  await db.callTranscript.upsert({
+    where: { callId: call.id },
+    create: { callId: call.id, rawTranscript: transcript },
+    update: { rawTranscript: transcript },
+  });
+
+  await db.callScore.upsert({
+    where: { callId: call.id },
+    create: {
+      callId: call.id,
+      totalScore: analysis.score,
+      greetingScore: analysis.metrics.greeting.score,
+      reactionScore: analysis.metrics.reaction.score,
+      empathyScore: analysis.metrics.empathy.score,
+      needsScore: analysis.metrics.needs.score,
+      presentationScore: analysis.metrics.presentation.score,
+      priceScore: analysis.metrics.price.score,
+      objectionsScore: analysis.metrics.objections.score,
+      closingScore: analysis.metrics.closing.score,
+      clarityScore: analysis.metrics.clarity.score,
+      lengthScore: analysis.metrics.length.score,
+      talkRatioManager: analysis.managerSpeechPercent,
+      summary: analysis.summary,
+      issues: analysis.issues,
+      details: analysis.metrics,
+    },
+    update: {
+      totalScore: analysis.score,
+      greetingScore: analysis.metrics.greeting.score,
+      reactionScore: analysis.metrics.reaction.score,
+      empathyScore: analysis.metrics.empathy.score,
+      needsScore: analysis.metrics.needs.score,
+      presentationScore: analysis.metrics.presentation.score,
+      priceScore: analysis.metrics.price.score,
+      objectionsScore: analysis.metrics.objections.score,
+      closingScore: analysis.metrics.closing.score,
+      clarityScore: analysis.metrics.clarity.score,
+      lengthScore: analysis.metrics.length.score,
+      talkRatioManager: analysis.managerSpeechPercent,
+      summary: analysis.summary,
+      issues: analysis.issues,
+      details: analysis.metrics,
+    },
+  });
+await db.call.update({
     where: { id: callId },
     data: {
       status: CallStatus.DONE,
@@ -359,6 +396,13 @@ not found`);
     },
   });
 }
+
+
+
+
+
+
+
 
 
 
