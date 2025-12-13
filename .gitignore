@@ -13,6 +13,8 @@ pnpm-lock.yaml
 .env.*
 !.env.example
 
+tsconfig.tsbuildinfo
+*.tsbuildinfo
 
 # temp
 *.tmp
