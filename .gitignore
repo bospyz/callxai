@@ -13,3 +13,10 @@ pnpm-lock.yaml
 .env.*
 !.env.example
 
+
+# temp
+*.tmp
+*.log
+tmp_*.sql
+tmp_*.txt
+
