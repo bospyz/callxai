@@ -7,3 +7,9 @@ out
 .DS_Store
 pnpm-lock.yaml
 .vercel
+
+# env
+.env
+.env.*
+!.env.example
+
