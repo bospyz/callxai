@@ -286,9 +286,25 @@ export async function processCall(callId: string) {
   const call = await db.call.findUnique({
     where: { id: callId },
   });
-
-  if (!call) {
-    throw new Error(`Call ${callId} not found`);
+if (!call) {
+    throw new Error(`Call ${callId} 
+  // QUALITY GATE: duration (skip too short calls to save cost and reduce noise)
+  if (!call.duration || call.duration < 15) {
+    await db.call.update({
+      where: { id: call.id },
+      data: {
+        status: CallStatus.DONE,
+        meta: {
+          ...(call.meta as any),
+          skipped: true,
+          reason: "call_too_short",
+          duration: call.duration ?? null,
+        },
+      },
+    });
+    return;
+  }
+not found`);
   }
 
   let transcript = call.transcript ?? "";
@@ -343,3 +359,6 @@ export async function processCall(callId: string) {
     },
   });
 }
+
+
+
