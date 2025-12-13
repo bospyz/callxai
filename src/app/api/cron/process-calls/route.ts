@@ -24,68 +24,77 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 });
   }
 
-  const limitParam = searchParams.get("limit") ?? "20";
+    const limitParam = searchParams.get("limit") ?? "20";
   const limit = Math.max(1, Math.min(200, Number(limitParam) || 20));
 
-  // 1) Ensure NEW calls are enqueued (idempotent)
-  const calls = await db.call.findMany({
-    where: { status: CallStatus.NEW },
-    orderBy: { createdAt: "asc" },
-    take: limit,
-    select: { id: true },
-  });
+  try {
+    // 1) Ensure NEW calls are enqueued (idempotent)
+    const calls = await db.call.findMany({
+      where: { status: CallStatus.NEW },
+      orderBy: { createdAt: "asc" },
+      take: limit,
+      select: { id: true },
+    });
 
-  let queued = 0;
-  for (const c of calls) {
-    await enqueueCallTask(c.id);
-    queued++;
-  }
+    let queued = 0;
+    for (const c of calls) {
+      await enqueueCallTask(c.id);
+      queued++;
+    }
 
-  // 2) Reset stuck tasks
-  const reset = await resetStuckTasks();
+    // 2) Reset stuck tasks
+    const reset = await resetStuckTasks();
 
-  // 3) Execute due tasks
-  const due = await listDueTasks(limit);
+    // 3) Execute due tasks
+    const due = await listDueTasks(limit);
 
-  let claimed = 0;
-  let processed = 0;
-  let errors = 0;
+    let claimed = 0;
+    let processed = 0;
+    let errors = 0;
 
-  for (const t of due) {
-    const ok = await claimTask(t.id);
-    if (!ok) continue;
+    for (const t of due) {
+      const ok = await claimTask(t.id);
+      if (!ok) continue;
 
-    claimed += 1;
-
-    try {
-      await markCallProcessing(t.callId);
-      await processCall(t.callId);
-      await markTaskDone(t.id);
-      processed += 1;
-    } catch (err: any) {
-      const msg = err?.message ?? String(err ?? "Unknown error");
-      // attempts уже increment в claimTask, поэтому передаем t.attempts+1
-      await markTaskError(t.id, t.attempts + 1, msg);
-      errors += 1;
+      claimed += 1;
 
       try {
-        await db.call.update({
-          where: { id: t.callId },
-          data: { status: CallStatus.ERROR, meta: { error: msg } },
-        });
-      } catch (_) {
-        // ignore
+        await markCallProcessing(t.callId);
+        await processCall(t.callId);
+        await markTaskDone(t.id);
+        processed += 1;
+      } catch (err: any) {
+        const msg = err?.message ?? String(err ?? "Unknown error");
+        await markTaskError(t.id, t.attempts + 1, msg);
+        errors += 1;
+
+        try {
+          await db.call.update({
+            where: { id: t.callId },
+            data: { status: CallStatus.ERROR, meta: { error: msg } },
+          });
+        } catch (_) {
+          // ignore
+        }
       }
     }
-  }
 
-  return NextResponse.json({
-    ok: true,
-    queued,
-    reset,
-    claimed,
-    processed,
-    errors,
-    message: `Queued=${queued} Reset=${reset} Claimed=${claimed} Processed=${processed} Errors=${errors}`,
-  });
+    return NextResponse.json({
+      ok: true,
+      queued,
+      reset,
+      claimed,
+      processed,
+      errors,
+      message: `Queued=${queued} Reset=${reset} Claimed=${claimed} Processed=${processed} Errors=${errors}`,
+    });
+  } catch (err: any) {
+    console.error("[cron/process-calls] failed", err);
+    const msg = err?.message ?? String(err ?? "Unknown error");
+    return NextResponse.json(
+      { ok: false, message: "DB temporarily unavailable", error: msg },
+      { status: 503 }
+    );
+  }
 }
+
