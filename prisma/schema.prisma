@@ -327,5 +327,12 @@ callId String @unique
   error    String?
   attempts Int            @default(0)
 
+  lockedAt       DateTime?
+  nextRunAt      DateTime?
+  lastAttemptAt  DateTime?
+  @@index([status, nextRunAt])
+  @@index([lockedAt])
+
   @@index([status, createdAt])
+
 }

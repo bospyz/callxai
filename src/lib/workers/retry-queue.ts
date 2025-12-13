@@ -1,6 +1,6 @@
 ﻿// src/lib/workers/retry-queue.ts
 
-import { CallStatus } from "@prisma/client";
+import { CallStatus, CallTaskStatus } from "@prisma/client";
 import { db } from "@/lib/db";
 import { enqueueCallTask } from "@/lib/workers/task-queue";
 
@@ -24,6 +24,21 @@ export async function retrySingleCall(callId: string, companyId?: string) {
     where: { id: call.id },
     data: {
       status: CallStatus.NEW,
+    },
+  });
+
+    await db.callTask.updateMany({
+    where: { callId: call.id },
+    data: { status: "NEW" as any, error: null, lockedAt: null, nextRunAt: null },
+  });
+
+    await db.callTask.updateMany({
+    where: { callId: call.id },
+    data: {
+      status: CallTaskStatus.NEW,
+      error: null,
+      lockedAt: null,
+      nextRunAt: null,
     },
   });
 
@@ -61,6 +76,21 @@ export async function retryFailedCallsForCompany(
       },
     });
 
+        await db.callTask.updateMany({
+      where: { callId: c.id },
+      data: { status: "NEW" as any, error: null, lockedAt: null, nextRunAt: null },
+    });
+
+        await db.callTask.updateMany({
+      where: { callId: c.id },
+      data: {
+        status: CallTaskStatus.NEW,
+        error: null,
+        lockedAt: null,
+        nextRunAt: null,
+      },
+    });
+
     await enqueueCallTask(c.id);
   }
 
@@ -92,6 +122,21 @@ export async function retryFailedCalls(max?: number) {
       },
     });
 
+        await db.callTask.updateMany({
+      where: { callId: c.id },
+      data: { status: "NEW" as any, error: null, lockedAt: null, nextRunAt: null },
+    });
+
+        await db.callTask.updateMany({
+      where: { callId: c.id },
+      data: {
+        status: CallTaskStatus.NEW,
+        error: null,
+        lockedAt: null,
+        nextRunAt: null,
+      },
+    });
+
     await enqueueCallTask(c.id);
   }
 
@@ -120,8 +165,25 @@ export async function retryAllFailedCalls() {
       },
     });
 
+        await db.callTask.updateMany({
+      where: { callId: c.id },
+      data: { status: "NEW" as any, error: null, lockedAt: null, nextRunAt: null },
+    });
+
+        await db.callTask.updateMany({
+      where: { callId: c.id },
+      data: {
+        status: CallTaskStatus.NEW,
+        error: null,
+        lockedAt: null,
+        nextRunAt: null,
+      },
+    });
+
     await enqueueCallTask(c.id);
   }
 
   return { retried: failed.length };
 }
+
+
