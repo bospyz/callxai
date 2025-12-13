@@ -332,8 +332,7 @@ return;
   // 3) Анализ текста звонка
   const analysis = await analyzeTranscript(transcript);
 
-  
-  // Persist structured tables (for future analytics & UI)
+  // Persist structured tables (for analytics & UI)
   await db.callTranscript.upsert({
     where: { callId: call.id },
     create: { callId: call.id, rawTranscript: transcript },
@@ -396,6 +395,8 @@ await db.call.update({
     },
   });
 }
+
+
 
 
 
