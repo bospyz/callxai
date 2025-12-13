@@ -141,6 +141,9 @@ model Manager {
 
   @@index([companyId])
   @@index([companyId, amoUserId])
+
+  // ✅ ВАЖНО: уникальность менеджера в рамках компании по amoUserId
+  @@unique([companyId, amoUserId], name: "companyId_amoUserId")
 }
 
 model Call {

@@ -88,7 +88,7 @@ export function IntegrationsClient({ amo, bitrix, webhook }: Props) {
       : quotaLimit !== null
       ? quotaLimit
       : plan === "FREE"
-      ? 500
+      ? 30
       : 2000;
 
   // как только приехала квота — подстраиваем настройки (без фиксаций и без сбросов)
