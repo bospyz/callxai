@@ -1,5 +1,9 @@
 ﻿import OpenAI from "openai";
 
+const OPENAI_TIMEOUT_MS = 25000;
+const OPENAI_MAX_RETRIES = 2;
+
+
 let client: OpenAI | null = null;
 
 /**
@@ -20,10 +24,12 @@ export function getOpenAIClient(): OpenAI {
       console.warn(
         "[openai] OPENAI_API_KEY is not set. Using dummy key in non-production."
       );
-      client = new OpenAI({ apiKey: "dummy-openai-key" });
+      client = new OpenAI({ apiKey: "dummy-openai-key", timeout: OPENAI_TIMEOUT_MS, maxRetries: OPENAI_MAX_RETRIES });
     } else {
-      client = new OpenAI({ apiKey });
+      client = new OpenAI({ apiKey, timeout: OPENAI_TIMEOUT_MS, maxRetries: OPENAI_MAX_RETRIES });
     }
   }
   return client;
 }
+
+
