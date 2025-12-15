@@ -1,10 +1,11 @@
-﻿
+﻿// src/lib/amocrm.ts
 import { db } from "@/lib/db";
 import crypto from "crypto";
 import { IntegrationType } from "@prisma/client";
 
-
-export type AmoIntegrationType = "amocrm";
+/* ============================================================
+   TYPES
+============================================================ */
 
 export type AmoTokens = {
   accessToken: string;
@@ -12,19 +13,48 @@ export type AmoTokens = {
   expiresAtMs: number; // unix ms
 };
 
-export type AmoConfig = {
-  domain: string; // example.amocrm.ru
-  accountId?: string; // amo account id if known
-  tokens?: AmoTokens | EncryptedTokens;
-  webhookSecret?: string; 
-  meta?: Record<string, any>;
-};
-
 export type EncryptedTokens = {
   enc: true;
   v: 1;
-  blob: string;
-  expiresAtMs: number; 
+  blob: string; // iv.cipher.tag (base64 parts)
+  expiresAtMs: number;
+};
+
+export type AmoConfig = {
+  domain: string; // example.amocrm.ru
+  accountId?: string;
+  tokens?: AmoTokens | EncryptedTokens;
+  webhookSecret?: string;
+  meta?: Record<string, any>;
+};
+
+export type AmoCallDTO = {
+  externalId: string;
+
+  occurredAt?: Date;
+  durationSec?: number;
+
+  direction?: "inbound" | "outbound" | "unknown";
+
+  phone?: string; // clientPhone
+  linePhone?: string; // linePhone
+
+  believesAudioUrl?: string; // (optional debug field)
+  audioUrl?: string; // recording url from amo (external)
+
+  leadId?: string;
+  leadName?: string;
+  leadUrl?: string;
+
+  pipelineId?: string;
+  pipelineName?: string;
+
+  stageId?: string;
+  stageName?: string;
+
+  amountKzt?: number;
+
+  raw?: any; // MUST keep for debugging
 };
 
 type AmoHttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -43,7 +73,6 @@ type AmoRequestOpts = {
   body?: any;
   timeoutMs?: number;
   retryMax?: number;
-  // if true, don't auto-refresh on 401 (rarely needed)
   disableAutoRefresh?: boolean;
 };
 
@@ -55,22 +84,9 @@ type AmoOAuthTokenResponse = {
   scope?: string;
 };
 
-/**
- * Minimal call-ish DTO. You may adapt to your real schema.
- */
-export type AmoCallDTO = {
-  externalId: string;
-  occurredAt?: Date;
-  durationSec?: number;
-  direction?: "in" | "out" | "unknown";
-  phone?: string;
-  audioUrl?: string;
-  raw?: any;
-};
-
-/* =========================
-   Config / env
-========================= */
+/* ============================================================
+   ENV / CONSTANTS
+============================================================ */
 
 const OAUTH_BASE = process.env.AMO_OAUTH_BASE || "https://www.amocrm.ru/oauth2";
 
@@ -86,34 +102,102 @@ const RETRY_MAX = (() => {
 
 const TOKEN_EXPIRY_SKEW_MS = 60_000; // refresh 60s before expiry
 
+/* ============================================================
+   SMALL UTILS
+============================================================ */
+
 function requireEnv(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`Missing env: ${name}`);
   return v;
 }
 
-/* =========================
-   Encryption (optional)
-========================= */
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function computeBackoffMs(attempt: number) {
+  const base = 400 * Math.pow(2, attempt);
+  const jitter = Math.floor(Math.random() * 250);
+  return Math.min(8000, base + jitter);
+}
+
+async function fetchTimeout(url: string, init: RequestInit, timeoutMs: number) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function asAmoError(e: any): AmoError {
+  if (e && typeof e.status === "number" && typeof e.message === "string") return e as AmoError;
+  const msg = e instanceof Error ? e.message : String(e ?? "Unknown error");
+  return { status: 0, message: msg, details: e };
+}
+
+async function parseJsonOrThrow(res: Response) {
+  let json: any = null;
+  try {
+    json = await res.json();
+  } catch {
+    json = null;
+  }
+
+  if (!res.ok) {
+    const err: AmoError = {
+      status: res.status,
+      message: json?.detail || json?.error || json?.message || `amoCRM request failed (${res.status})`,
+      details: json,
+    };
+    throw err;
+  }
+
+  return json;
+}
+
+function buildQuery(query?: Record<string, string | number | boolean | undefined>): string {
+  if (!query) return "";
+  const pairs = Object.entries(query).filter(([, v]) => v !== undefined);
+  if (!pairs.length) return "";
+  const sp = new URLSearchParams();
+  for (const [k, v] of pairs) sp.set(k, String(v));
+  const qs = sp.toString();
+  return qs ? `?${qs}` : "";
+}
+
+/* ============================================================
+   DOMAIN VALIDATION
+============================================================ */
+
+export function validateAmoDomain(domain: string): string {
+  const d = domain.trim().toLowerCase();
+  // allow common amo zones; extend if needed
+  if (!/^[a-z0-9-]+\.amocrm\.(ru|com|kz|ua|by)$/i.test(d)) {
+    throw new Error("Invalid amoCRM domain format");
+  }
+  return d;
+}
+
+/* ============================================================
+   TOKEN ENCRYPTION (OPTIONAL)
+============================================================ */
 
 function getEncKey(): Buffer | null {
   const raw = process.env.AMO_TOKEN_ENC_KEY;
   if (!raw) return null;
 
-  // Accept: 64-hex (32 bytes) or base64
-  const hexLike = /^[0-9a-fA-F]{64}$/.test(raw);
-  if (hexLike) return Buffer.from(raw, "hex");
+  if (/^[0-9a-fA-F]{64}$/.test(raw)) return Buffer.from(raw, "hex");
 
-  // base64
   const buf = Buffer.from(raw, "base64");
   if (buf.length === 32) return buf;
 
-  throw new Error(
-    "AMO_TOKEN_ENC_KEY invalid: expected 32 bytes base64 or 64 hex chars"
-  );
+  throw new Error("AMO_TOKEN_ENC_KEY invalid: expected 32 bytes base64 or 64 hex chars");
 }
 
-function encryptJson(obj: any): { blob: string; ivB64: string; tagB64: string } {
+function encryptJson(obj: any): { blob: string } {
   const key = getEncKey();
   if (!key) throw new Error("Encryption key not configured");
 
@@ -126,8 +210,6 @@ function encryptJson(obj: any): { blob: string; ivB64: string; tagB64: string } 
 
   return {
     blob: `${iv.toString("base64")}.${ciphertext.toString("base64")}.${tag.toString("base64")}`,
-    ivB64: iv.toString("base64"),
-    tagB64: tag.toString("base64"),
   };
 }
 
@@ -145,11 +227,7 @@ function decryptJson(blob: string): any {
   const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
   decipher.setAuthTag(tag);
 
-  const plaintext = Buffer.concat([
-    decipher.update(ciphertext),
-    decipher.final(),
-  ]);
-
+  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   return JSON.parse(plaintext.toString("utf8"));
 }
 
@@ -158,69 +236,36 @@ function maybeEncryptTokens(tokens: AmoTokens): AmoTokens | EncryptedTokens {
   if (!key) return tokens;
 
   const enc = encryptJson(tokens);
-  return {
-    enc: true,
-    v: 1,
-    blob: enc.blob,
-    expiresAtMs: tokens.expiresAtMs,
-  };
+  return { enc: true, v: 1, blob: enc.blob, expiresAtMs: tokens.expiresAtMs };
 }
 
-function maybeDecryptTokens(
-  tokens: AmoTokens | EncryptedTokens
-): AmoTokens {
+function maybeDecryptTokens(tokens: AmoTokens | EncryptedTokens): AmoTokens {
   if ((tokens as EncryptedTokens)?.enc) {
-    const decoded = decryptJson((tokens as EncryptedTokens).blob);
-    return decoded as AmoTokens;
+    return decryptJson((tokens as EncryptedTokens).blob) as AmoTokens;
   }
   return tokens as AmoTokens;
 }
 
-/* =========================
-   DB config read/write
-   Adapt these two functions if your schema differs.
-========================= */
+/* ============================================================
+   DB CONFIG
+============================================================ */
 
 async function getAmoIntegrationByCompany(companyId: string) {
-  // Adjust select/where to match your prisma schema.
-  // Expected: Integration has (id, companyId, type, enabled, config Json)
-  const integration = await db.integration.findFirst({
+  return db.integration.findFirst({
     where: { companyId, type: IntegrationType.AMOCRM },
-    select: {
-      id: true,
-      enabled: true,
-      config: true,
-      companyId: true,
-      type: true,
-      updatedAt: true,
-      createdAt: true,
-    },
-  });
-
-  return integration;
-}
-
-async function writeAmoConfig(integrationId: string, cfg: AmoConfig) {
-  await db.integration.update({
-    where: { id: integrationId },
-    data: { config: cfg },
+    select: { id: true, enabled: true, config: true, companyId: true, updatedAt: true, createdAt: true },
   });
 }
 
 function readAmoConfig(raw: any): AmoConfig {
-  if (!raw || typeof raw !== "object") {
-    throw new Error("amoCRM config missing or invalid");
-  }
-  const domain = raw.domain;
-  if (typeof domain !== "string" || !domain) {
-    throw new Error("amoCRM config.domain missing");
-  }
+  if (!raw || typeof raw !== "object") throw new Error("amoCRM config missing or invalid");
+  if (typeof raw.domain !== "string" || !raw.domain) throw new Error("amoCRM config.domain missing");
   return raw as AmoConfig;
 }
 
-/* =========================
-   Public: ensure integration enabled
-========================= */
+async function writeAmoConfig(integrationId: string, cfg: AmoConfig) {
+  await db.integration.update({ where: { id: integrationId }, data: { config: cfg } });
+}
 
 export async function requireAmoIntegrationEnabled(companyId: string) {
   const integration = await getAmoIntegrationByCompany(companyId);
@@ -230,43 +275,36 @@ export async function requireAmoIntegrationEnabled(companyId: string) {
   return { integration, cfg };
 }
 
-/* =========================
-   OAuth: build authorize URL
-========================= */
+/* ============================================================
+   OAUTH
+============================================================ */
 
-export function buildAmoAuthorizeUrl(params: {
-  domain: string; // tenant domain
-  state: string;  // anti-CSRF, store in session/db
-}): string {
+export function buildAmoAuthorizeUrl(params: { domain: string; state: string }): string {
+  const domain = validateAmoDomain(params.domain);
   const clientId = requireEnv("AMO_CLIENT_ID");
   const redirectUri = requireEnv("AMO_REDIRECT_URI");
 
-  const url = new URL(`https://${params.domain}/oauth?client_id=${encodeURIComponent(clientId)}`);
+  const url = new URL(`https://${domain}/oauth`);
+  url.searchParams.set("client_id", clientId);
   url.searchParams.set("state", params.state);
-  url.searchParams.set("mode", "post_message"); // optional; you may remove
   url.searchParams.set("redirect_uri", redirectUri);
-
+  // url.searchParams.set("mode", "post_message"); // optional
   return url.toString();
 }
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
-  return fetchTimeout(url, init, timeoutMs);
-}
 
-/**
- * Exchange authorization code for tokens.
- * You should call this from your /connect callback route.
- */
 export async function exchangeAmoCodeForTokens(params: {
   companyId: string;
   domain: string;
   code: string;
 }): Promise<{ integrationId: string; config: AmoConfig }> {
+  const domain = validateAmoDomain(params.domain);
+
   const clientId = requireEnv("AMO_CLIENT_ID");
   const clientSecret = requireEnv("AMO_CLIENT_SECRET");
   const redirectUri = requireEnv("AMO_REDIRECT_URI");
 
-  // Ensure integration exists
   const existing = await getAmoIntegrationByCompany(params.companyId);
+
   const integration =
     existing ??
     (await db.integration.create({
@@ -274,22 +312,26 @@ export async function exchangeAmoCodeForTokens(params: {
         companyId: params.companyId,
         type: IntegrationType.AMOCRM,
         enabled: true,
-        config: { domain: params.domain },
+        config: { domain },
       },
-      select: { id: true, config: true, enabled: true },
+      select: { id: true, enabled: true, config: true },
     }));
 
-  const res = await fetchWithTimeout(`${OAUTH_BASE}/access_token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      client_id: clientId,
-      client_secret: clientSecret,
-      grant_type: "authorization_code",
-      code: params.code,
-      redirect_uri: redirectUri,
-    }),
-  }, TIMEOUT_MS);
+  const res = await fetchTimeout(
+    `${OAUTH_BASE}/access_token`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_id: clientId,
+        client_secret: clientSecret,
+        grant_type: "authorization_code",
+        code: params.code,
+        redirect_uri: redirectUri,
+      }),
+    },
+    TIMEOUT_MS
+  );
 
   const data = (await parseJsonOrThrow(res)) as AmoOAuthTokenResponse;
 
@@ -300,63 +342,28 @@ export async function exchangeAmoCodeForTokens(params: {
   };
 
   const cfg: AmoConfig = {
-    domain: params.domain,
+    domain,
     tokens: maybeEncryptTokens(tokens),
-    meta: {
-      connectedAt: new Date().toISOString(),
-    },
+    meta: { connectedAt: new Date().toISOString() },
   };
 
   await writeAmoConfig(integration.id, cfg);
 
-  // enable integration
-  if (!existing?.enabled) {
-    await db.integration.update({
-      where: { id: integration.id },
-      data: { enabled: true },
-    });
+  if (existing && !existing.enabled) {
+    await db.integration.update({ where: { id: integration.id }, data: { enabled: true } });
   }
 
   return { integrationId: integration.id, config: cfg };
 }
 
-/* =========================
-   Token lifecycle / refresh with DB lock
-========================= */
+/* ============================================================
+   TOKENS: GET / REFRESH
+============================================================ */
 
 function tokenExpired(tokens: AmoTokens): boolean {
   return tokens.expiresAtMs - TOKEN_EXPIRY_SKEW_MS <= Date.now();
 }
 
-async function parseJsonOrThrow(res: Response) {
-  let json: any = null;
-  try {
-    json = await res.json();
-  } catch {
-    json = null;
-  }
-
-  if (!res.ok) {
-    const err: AmoError = {
-      status: res.status,
-      message:
-        json?.detail ||
-        json?.error ||
-        json?.message ||
-        `amoCRM request failed (${res.status})`,
-      details: json,
-    };
-    throw err;
-  }
-
-  return json;
-}
-
-/**
- * Refresh tokens for company. Uses DB as source of truth.
- * NOTE: For true distributed locking, use a dedicated lock field / advisory lock.
- * Here we do a safe "read latest -> refresh -> write" which is enough for MVP.
- */
 export async function refreshAmoTokens(companyId: string): Promise<AmoTokens> {
   const integration = await getAmoIntegrationByCompany(companyId);
   if (!integration) throw new Error("amoCRM integration not found");
@@ -368,23 +375,27 @@ export async function refreshAmoTokens(companyId: string): Promise<AmoTokens> {
   const clientSecret = requireEnv("AMO_CLIENT_SECRET");
   const redirectUri = requireEnv("AMO_REDIRECT_URI");
 
-  const current = maybeDecryptTokens(cfg.tokens as any);
+  const current = maybeDecryptTokens(cfg.tokens);
 
-  const res = await fetchWithTimeout(`${OAUTH_BASE}/access_token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      client_id: clientId,
-      client_secret: clientSecret,
-      grant_type: "refresh_token",
-      refresh_token: current.refreshToken,
-      redirect_uri: redirectUri,
-    }),
-  }, TIMEOUT_MS);
+  const res = await fetchTimeout(
+    `${OAUTH_BASE}/access_token`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_id: clientId,
+        client_secret: clientSecret,
+        grant_type: "refresh_token",
+        refresh_token: current.refreshToken,
+        redirect_uri: redirectUri,
+      }),
+    },
+    TIMEOUT_MS
+  );
 
   const data = (await parseJsonOrThrow(res)) as AmoOAuthTokenResponse;
 
-  const tokens: AmoTokens = {
+  const next: AmoTokens = {
     accessToken: data.access_token,
     refreshToken: data.refresh_token,
     expiresAtMs: Date.now() + data.expires_in * 1000,
@@ -392,21 +403,14 @@ export async function refreshAmoTokens(companyId: string): Promise<AmoTokens> {
 
   const nextCfg: AmoConfig = {
     ...cfg,
-    tokens: maybeEncryptTokens(tokens),
-    meta: {
-      ...(cfg.meta || {}),
-      refreshedAt: new Date().toISOString(),
-    },
+    tokens: maybeEncryptTokens(next),
+    meta: { ...(cfg.meta || {}), refreshedAt: new Date().toISOString() },
   };
 
   await writeAmoConfig(integration.id, nextCfg);
-
-  return tokens;
+  return next;
 }
 
-/**
- * Get access token (auto refresh if expired)
- */
 export async function amoGetAccessTokenForCompany(companyId: string): Promise<{
   integrationId: string;
   domain: string;
@@ -418,69 +422,19 @@ export async function amoGetAccessTokenForCompany(companyId: string): Promise<{
   const cfg = readAmoConfig(integration.config);
   if (!cfg.tokens) throw new Error("amoCRM tokens missing");
 
-  const tokens = maybeDecryptTokens(cfg.tokens as any);
+  const tokens = maybeDecryptTokens(cfg.tokens);
 
-  if (tokenExpired(tokens)) {
-    const refreshed = await refreshAmoTokens(companyId);
-    return {
-      integrationId: integration.id,
-      domain: cfg.domain,
-      accessToken: refreshed.accessToken,
-    };
+  if (!tokenExpired(tokens)) {
+    return { integrationId: integration.id, domain: cfg.domain, accessToken: tokens.accessToken };
   }
 
-  return {
-    integrationId: integration.id,
-    domain: cfg.domain,
-    accessToken: tokens.accessToken,
-  };
+  const refreshed = await refreshAmoTokens(companyId);
+  return { integrationId: integration.id, domain: cfg.domain, accessToken: refreshed.accessToken };
 }
 
-/* =========================
-   HTTP: request with retry/backoff + 401 refresh
-========================= */
-
-function buildQuery(
-  query?: Record<string, string | number | boolean | undefined>
-): string {
-  if (!query) return "";
-  const pairs = Object.entries(query).filter(([, v]) => v !== undefined);
-  if (!pairs.length) return "";
-
-  const sp = new URLSearchParams();
-  for (const [k, v] of pairs) sp.set(k, String(v));
-  const qs = sp.toString();
-  return qs ? `?${qs}` : "";
-}
-
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function computeBackoffMs(attempt: number) {
-  // exponential + jitter
-  const base = 400 * Math.pow(2, attempt);
-  const jitter = Math.floor(Math.random() * 200);
-  return Math.min(6000, base + jitter);
-}
-
-async function fetchTimeout(url: string, init: RequestInit, timeoutMs: number) {
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-function asAmoError(e: any): AmoError {
-  if (e && typeof e.status === "number" && typeof e.message === "string") {
-    return e as AmoError;
-  }
-  const msg = e instanceof Error ? e.message : "Unknown error";
-  return { status: 0, message: msg, details: e };
-}
+/* ============================================================
+   REQUEST: retry/backoff + 401 refresh + 429 wait
+============================================================ */
 
 export async function amoRequest<T = any>(opts: AmoRequestOpts): Promise<T> {
   const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS;
@@ -491,12 +445,9 @@ export async function amoRequest<T = any>(opts: AmoRequestOpts): Promise<T> {
 
   for (let attempt = 0; attempt <= retryMax; attempt++) {
     try {
-      const { domain, accessToken } = await amoGetAccessTokenForCompany(
-        opts.companyId
-      );
+      const { domain, accessToken } = await amoGetAccessTokenForCompany(opts.companyId);
 
       const url = `https://${domain}${opts.path}${buildQuery(opts.query)}`;
-
       const res = await fetchTimeout(
         url,
         {
@@ -510,14 +461,12 @@ export async function amoRequest<T = any>(opts: AmoRequestOpts): Promise<T> {
         timeoutMs
       );
 
-      // If unauthorized, refresh once and retry (unless disabled)
       if (res.status === 401 && !opts.disableAutoRefresh && !refreshedOnce) {
         refreshedOnce = true;
         await refreshAmoTokens(opts.companyId);
         continue;
       }
 
-      // Handle rate limit
       if (res.status === 429) {
         const ra = res.headers.get("retry-after");
         const waitMs = ra ? Math.max(0, Number(ra) * 1000) : computeBackoffMs(attempt);
@@ -530,7 +479,6 @@ export async function amoRequest<T = any>(opts: AmoRequestOpts): Promise<T> {
     } catch (e) {
       lastErr = asAmoError(e);
 
-      // non-retryable statuses
       const nonRetry =
         lastErr.status === 400 ||
         lastErr.status === 401 ||
@@ -546,9 +494,9 @@ export async function amoRequest<T = any>(opts: AmoRequestOpts): Promise<T> {
   throw lastErr ?? { status: 0, message: "amoRequest failed" };
 }
 
-/* =========================
-   Pagination helpers (amo v4 style)
-========================= */
+/* ============================================================
+   PAGINATION HELPER
+============================================================ */
 
 export async function amoFetchAllPages<TItem>(params: {
   companyId: string;
@@ -558,8 +506,8 @@ export async function amoFetchAllPages<TItem>(params: {
   embeddedKey?: string; // default "items"
   query?: Record<string, string | number | boolean | undefined>;
 }): Promise<TItem[]> {
-  const perPage = params.perPage ?? 50;
-  const maxPages = params.maxPages ?? 20;
+  const perPage = Math.max(10, Math.min(250, params.perPage ?? 50));
+  const maxPages = Math.max(1, Math.min(200, params.maxPages ?? 20));
   const embeddedKey = params.embeddedKey ?? "items";
 
   const out: TItem[] = [];
@@ -568,15 +516,12 @@ export async function amoFetchAllPages<TItem>(params: {
       companyId: params.companyId,
       method: "GET",
       path: params.path,
-      query: {
-        ...(params.query || {}),
-        page,
-        limit: perPage,
-      },
+      query: { ...(params.query || {}), page, limit: perPage },
     });
 
     const items: TItem[] = json?._embedded?.[embeddedKey] ?? [];
     if (!items.length) break;
+
     out.push(...items);
     if (items.length < perPage) break;
   }
@@ -584,17 +529,37 @@ export async function amoFetchAllPages<TItem>(params: {
   return out;
 }
 
-/* =========================
-   Minimal Normalization (adapt to your real amo payload)
-   NOTE: amo "calls" can be stored in different entities depending on setup.
-   You likely read from a custom endpoint / events / notes. Keep this as adapter.
-========================= */
+/* ============================================================
+   NORMALIZATION (THE IMPORTANT PART)
+   Цель: стабильно получить:
+   - externalId (always)
+   - occurredAt/duration
+   - phone/linePhone
+   - audioUrl (as often as possible)
+   - raw saved
+============================================================ */
+
+function pickFirstString(...vals: any[]): string | undefined {
+  for (const v of vals) {
+    if (typeof v === "string" && v.trim()) return v.trim();
+    if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  }
+  return undefined;
+}
+
+function pickFirstNumber(...vals: any[]): number | undefined {
+  for (const v of vals) {
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string" && v.trim() && Number.isFinite(Number(v))) return Number(v);
+  }
+  return undefined;
+}
 
 function toDateMaybe(v: any): Date | undefined {
   if (typeof v === "number") {
-    // unix seconds? try both
     if (v > 10_000_000_000) return new Date(v); // ms
-    return new Date(v * 1000); // sec
+    if (v > 1_000_000_000) return new Date(v * 1000); // sec
+    return undefined;
   }
   if (typeof v === "string") {
     const d = new Date(v);
@@ -603,42 +568,170 @@ function toDateMaybe(v: any): Date | undefined {
   return undefined;
 }
 
+function normalizeDirection(v: any): "inbound" | "outbound" | "unknown" {
+  const s = (v ?? "").toString().trim().toLowerCase();
+  if (["in", "inbound", "incoming", "1"].includes(s)) return "inbound";
+  if (["out", "outbound", "outgoing", "2"].includes(s)) return "outbound";
+  return "unknown";
+}
+
+function looksLikeCallObject(x: any): boolean {
+  if (!x || typeof x !== "object") return false;
+  return Boolean(
+    x.id ||
+      x.uuid ||
+      x.call_id ||
+      x.duration ||
+      x.duration_sec ||
+      x.audio_url ||
+      x.recording_url ||
+      x.from ||
+      x.to ||
+      x.phone ||
+      x.created_at ||
+      x.occurred_at
+  );
+}
+
+function tryGetEmbeddedCall(raw: any): any {
+  const candidates = [
+    raw?.call,
+    raw?.data?.call,
+    raw?._embedded?.call,
+    raw?._embedded?.calls?.[0],
+    raw?.params?.call,
+    raw,
+  ].filter(Boolean);
+
+  for (const c of candidates) {
+    if (looksLikeCallObject(c)) return c;
+  }
+
+  if (looksLikeCallObject(raw?.params)) return raw.params;
+  return raw;
+}
+
+function normalizeAudioUrl(obj: any): string | undefined {
+  const direct = pickFirstString(
+    obj?.audio_url,
+    obj?.recording_url,
+    obj?.record_url,
+    obj?.recording?.url,
+    obj?.recording?.link,
+    obj?.record?.url,
+    obj?.record?.link,
+    obj?.link,
+    obj?.url,
+
+    // often in params
+    obj?.params?.audio_url,
+    obj?.params?.recording_url,
+    obj?.params?.link
+  );
+
+  const fromLinks =
+    Array.isArray(obj?.links)
+      ? pickFirstString(
+          obj.links.find((x: any) => x?.type === "recording")?.href,
+          obj.links[0]?.href
+        )
+      : undefined;
+
+  const fromUnderscoreLinks = pickFirstString(obj?._links?.recording?.href, obj?._links?.self?.href);
+
+  const fromAttachments =
+    Array.isArray(obj?.attachments)
+      ? pickFirstString(
+          obj.attachments.find((a: any) => a?.type === "recording")?.url,
+          obj.attachments[0]?.url
+        )
+      : undefined;
+
+  const out = direct || fromLinks || fromUnderscoreLinks || fromAttachments;
+  if (!out) return undefined;
+
+  try {
+    const u = new URL(out);
+    if (u.protocol === "http:" || u.protocol === "https:") return out;
+  } catch {}
+  return undefined;
+}
+
+function makeExternalId(raw: any, obj: any, occurredAt?: Date, phone?: string, durationSec?: number): string | undefined {
+  const base =
+    pickFirstString(obj?.id, obj?.uuid, obj?.call_id, raw?.id, raw?.uuid, raw?.call_id) ||
+    pickFirstString(raw?.note?.id, raw?.note_id, raw?.element_id);
+
+  if (base) return String(base);
+
+  const ts = occurredAt ? occurredAt.toISOString() : "";
+  const ph = phone ? String(phone) : "";
+  const dur = Number.isFinite(Number(durationSec)) ? String(durationSec) : "";
+  const composed = [ts, ph, dur].filter(Boolean).join("|");
+  if (!composed) return undefined;
+
+  return crypto.createHash("sha1").update(composed).digest("hex");
+}
+
 export function normalizeAmoCall(raw: any): AmoCallDTO | null {
-  // This is intentionally conservative.
-  // You MUST map this to the actual raw you fetch in your sync route.
-
-  const externalId =
-    raw?.id != null ? String(raw.id) :
-    raw?.uuid != null ? String(raw.uuid) :
-    null;
-
-  if (!externalId) return null;
+  const obj = tryGetEmbeddedCall(raw);
 
   const occurredAt =
-    toDateMaybe(raw?.created_at) ||
+    toDateMaybe(obj?.occurred_at) ||
+    toDateMaybe(obj?.created_at) ||
+    toDateMaybe(obj?.date) ||
+    toDateMaybe(obj?.timestamp) ||
     toDateMaybe(raw?.occurred_at) ||
+    toDateMaybe(raw?.created_at) ||
     toDateMaybe(raw?.date);
 
   const durationSec =
-    typeof raw?.duration === "number" ? raw.duration :
-    typeof raw?.duration_sec === "number" ? raw.duration_sec :
+    pickFirstNumber(obj?.duration, obj?.duration_sec, obj?.durationSeconds, obj?.talk_time, raw?.duration, raw?.duration_sec) ??
     undefined;
 
-  const direction: AmoCallDTO["direction"] =
-    raw?.direction === "in" || raw?.direction === "out"
-      ? raw.direction
-      : "unknown";
+  const direction = normalizeDirection(obj?.direction ?? obj?.dir ?? obj?.call_direction ?? raw?.direction);
 
-  const phone =
-    typeof raw?.phone === "string" ? raw.phone :
-    typeof raw?.from === "string" ? raw.from :
-    typeof raw?.to === "string" ? raw.to :
-    undefined;
+  const phone = pickFirstString(
+    obj?.phone,
+    obj?.client_phone,
+    obj?.contact_phone,
+    obj?.from,
+    obj?.src,
+    obj?.source,
+    obj?.caller,
+    obj?.caller_phone,
+    obj?.phone_from,
+    raw?.phone,
+    raw?.from
+  );
 
-  const audioUrl =
-    typeof raw?.audio_url === "string" ? raw.audio_url :
-    typeof raw?.recording_url === "string" ? raw.recording_url :
-    undefined;
+  const linePhone = pickFirstString(
+    obj?.line_phone,
+    obj?.to,
+    obj?.dst,
+    obj?.destination,
+    obj?.callee,
+    obj?.callee_phone,
+    obj?.phone_to,
+    raw?.to
+  );
+
+  const externalId = makeExternalId(raw, obj, occurredAt, phone, durationSec);
+  if (!externalId) return null;
+
+  const audioUrl = normalizeAudioUrl(obj) || normalizeAudioUrl(raw);
+
+  const leadId = pickFirstString(obj?.lead_id, obj?.leadId, obj?.entity_id, obj?.element_id, raw?.lead_id);
+  const leadName = pickFirstString(obj?.lead_name, obj?.leadName);
+  const leadUrl = pickFirstString(obj?.lead_url, obj?.leadUrl);
+
+  const pipelineId = pickFirstString(obj?.pipeline_id, obj?.pipelineId);
+  const pipelineName = pickFirstString(obj?.pipeline_name, obj?.pipelineName);
+
+  const stageId = pickFirstString(obj?.stage_id, obj?.stageId, obj?.status_id);
+  const stageName = pickFirstString(obj?.stage_name, obj?.stageName, obj?.status_name);
+
+  const amountKzt = pickFirstNumber(obj?.amount, obj?.price, obj?.sum, obj?.budget);
 
   return {
     externalId,
@@ -646,130 +739,27 @@ export function normalizeAmoCall(raw: any): AmoCallDTO | null {
     durationSec,
     direction,
     phone,
+    linePhone,
     audioUrl,
+    leadId,
+    leadName,
+    leadUrl,
+    pipelineId,
+    pipelineName,
+    stageId,
+    stageName,
+    amountKzt,
     raw,
   };
 }
 
-/* =========================
-   Webhook verification helpers (optional)
-   If you implement webhook secrets, use these in your webhook route.
-========================= */
+/* ============================================================
+   OPTIONAL: refresh all tokens (cron)
+============================================================ */
 
-export function signWebhookHmacSha256(params: {
-  secret: string;
-  body: string; // raw body string
-}): string {
-  return crypto
-    .createHmac("sha256", params.secret)
-    .update(params.body, "utf8")
-    .digest("hex");
-}
-
-export function verifyWebhookHmacSha256(params: {
-  secret: string;
-  body: string;
-  signature: string | null | undefined;
-}): boolean {
-  if (!params.signature) return false;
-  const expected = signWebhookHmacSha256({
-    secret: params.secret,
-    body: params.body,
-  });
-
-  // constant-time compare
-  const a = Buffer.from(expected, "hex");
-  const b = Buffer.from(params.signature, "hex");
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
-}
-
-/* =========================
-   Safety: domain validation
-========================= */
-
-export function validateAmoDomain(domain: string): string {
-  const d = domain.trim().toLowerCase();
-
-  // Strict-ish validation
-  if (!/^[a-z0-9-]+\.amocrm\.(ru|com|kz|ua|by)$/i.test(d)) {
-    // keep it flexible if you use .com etc; adjust as needed
-    // For now, allow .ru and .com or others via regex above
-    throw new Error("Invalid amoCRM domain format");
-  }
-
-  return d;
-}
-
-/* =========================
-   Convenience: connect helper (domain only)
-   Use if your connect route stores domain first, then redirects to oauth.
-========================= */
-
-export async function upsertAmoIntegrationDomain(params: {
-  companyId: string;
-  domain: string;
-  enabled?: boolean;
-}): Promise<{ integrationId: string; config: AmoConfig }> {
-  const domain = validateAmoDomain(params.domain);
-
-  const existing = await getAmoIntegrationByCompany(params.companyId);
-  if (!existing) {
-    const cfg: AmoConfig = { domain };
-    const created = await db.integration.create({
-      data: {
-        companyId: params.companyId,
-        type: IntegrationType.AMOCRM,
-        enabled: params.enabled ?? true,
-        config: cfg,
-      },
-      select: { id: true, config: true },
-    });
-
-    return { integrationId: created.id, config: readAmoConfig(created.config) };
-  }
-
-  const cfg = readAmoConfig(existing.config);
-  const next: AmoConfig = {
-    ...cfg,
-    domain,
-    meta: { ...(cfg.meta || {}), domainUpdatedAt: new Date().toISOString() },
-  };
-
-  await db.integration.update({
-    where: { id: existing.id },
-    data: {
-      enabled: params.enabled ?? existing.enabled,
-      config: next,
-    },
-  });
-
-  return { integrationId: existing.id, config: next };
-}
-/* =========================
-   Hardening: redact helpers for logs
-========================= */
-
-export function redactAmoConfigForLogs(cfg: AmoConfig): Record<string, any> {
-  return {
-    domain: cfg.domain,
-    accountId: cfg.accountId,
-    hasTokens: !!cfg.tokens,
-    tokensEncrypted: !!(cfg.tokens as any)?.enc,
-    expiresAtMs: (cfg.tokens as any)?.expiresAtMs,
-  };
-}
-
-/**
- * Refresh amo tokens for all enabled amoCRM integrations.
- * Used by scripts/cron/hourly_refresh.ts
- *
- * Safe for MVP: идём по интеграциям пачками, обновляем токены по companyId.
- * Не падаем целиком из-за одной компании — собираем статистику.
- */
 export async function refreshAllAmoTokens(params?: {
-  take?: number; // max integrations to process in one run
-  onlyExpired?: boolean; // refresh only if token is expired
+  take?: number;
+  onlyExpired?: boolean;
 }): Promise<{
   ok: boolean;
   total: number;
@@ -784,7 +774,7 @@ export async function refreshAllAmoTokens(params?: {
   const integrations = await db.integration.findMany({
     where: { type: IntegrationType.AMOCRM, enabled: true },
     take,
-    select: { companyId: true, config: true },
+    select: { companyId: true, config: true, updatedAt: true },
     orderBy: { updatedAt: "desc" },
   });
 
@@ -793,29 +783,25 @@ export async function refreshAllAmoTokens(params?: {
   const errors: Array<{ companyId: string; error: string }> = [];
 
   for (const it of integrations) {
-    const companyId = it.companyId;
-
     try {
       const cfg = readAmoConfig(it.config);
-
       if (!cfg.tokens) {
         skipped += 1;
         continue;
       }
 
       if (onlyExpired) {
-        const tokens = maybeDecryptTokens(cfg.tokens as any);
+        const tokens = maybeDecryptTokens(cfg.tokens);
         if (!tokenExpired(tokens)) {
           skipped += 1;
           continue;
         }
       }
 
-      await refreshAmoTokens(companyId);
+      await refreshAmoTokens(it.companyId);
       refreshed += 1;
     } catch (e: any) {
-      const msg = e?.message ?? String(e ?? "Unknown error");
-      errors.push({ companyId, error: msg });
+      errors.push({ companyId: it.companyId, error: e?.message ?? String(e ?? "Unknown error") });
     }
   }
 
@@ -826,5 +812,19 @@ export async function refreshAllAmoTokens(params?: {
     skipped,
     failed: errors.length,
     errors,
+  };
+}
+
+/* ============================================================
+   HARDENING: redact config in logs
+============================================================ */
+
+export function redactAmoConfigForLogs(cfg: AmoConfig): Record<string, any> {
+  return {
+    domain: cfg.domain,
+    accountId: cfg.accountId,
+    hasTokens: !!cfg.tokens,
+    tokensEncrypted: !!(cfg.tokens as any)?.enc,
+    expiresAtMs: (cfg.tokens as any)?.expiresAtMs,
   };
 }

@@ -2,8 +2,25 @@
 import { db } from "@/lib/db";
 import { enqueueCallTask } from "@/lib/workers/task-queue";
 import { amoRequest, normalizeAmoCall } from "@/lib/amocrm";
+import { CallDirection } from "@prisma/client";
 
 type StopReason = "limit" | "scanMax" | "repeatPage" | "noItems" | "shortPage";
+
+/**
+ * Нормализация направления в строгий enum Prisma.
+ * Поддерживает разные варианты, которые часто встречаются в интеграциях.
+ */
+function mapDirection(input?: string | null): CallDirection {
+  const v = (input ?? "").toString().trim().toLowerCase();
+
+  if (v === "inbound" || v === "in" || v === "incoming" || v === "1") {
+    return CallDirection.INBOUND;
+  }
+  if (v === "outbound" || v === "out" || v === "outgoing" || v === "2") {
+    return CallDirection.OUTBOUND;
+  }
+  return CallDirection.UNKNOWN;
+}
 
 export async function syncAmoRecentCalls(params: {
   companyId: string;
@@ -74,7 +91,10 @@ export async function syncAmoRecentCalls(params: {
   const skipShort = Boolean(params.skipShort ?? false);
   const minDurationSec = Math.max(0, Number(params.minDurationSec ?? 0) || 0);
 
-  const perPage = Math.max(10, Math.min(250, Number(params.perPage ?? 50) || 50));
+  const perPage = Math.max(
+    10,
+    Math.min(250, Number(params.perPage ?? 50) || 50)
+  );
   const embeddedKey = params.embeddedKey ?? "items";
 
   // scanMax должен быть большим, иначе ты не добьёшь target,
@@ -85,7 +105,9 @@ export async function syncAmoRecentCalls(params: {
     20000
   );
 
-  const sinceIso = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
+  const sinceIso = new Date(
+    Date.now() - days * 24 * 3600 * 1000
+  ).toISOString();
 
   let created = 0;
   let scanned = 0;
@@ -113,8 +135,14 @@ export async function syncAmoRecentCalls(params: {
   }
 
   for (let page = 1; ; page++) {
-    if (created >= target) { stoppedBy = "limit"; break; }
-    if (scanned >= scanMax) { stoppedBy = "scanMax"; break; }
+    if (created >= target) {
+      stoppedBy = "limit";
+      break;
+    }
+    if (scanned >= scanMax) {
+      stoppedBy = "scanMax";
+      break;
+    }
 
     const raw = await amoRequest<any>({
       companyId: params.companyId,
@@ -138,30 +166,49 @@ export async function syncAmoRecentCalls(params: {
     lastPage = page;
     lastItemsCount = items.length;
 
-    if (!items.length) { stoppedBy = "noItems"; break; }
+    if (!items.length) {
+      stoppedBy = "noItems";
+      break;
+    }
 
     const fp = pageFingerprint(items);
     if (fp) {
-      if (seenPageFingerprints.has(fp)) { stoppedBy = "repeatPage"; break; }
+      if (seenPageFingerprints.has(fp)) {
+        stoppedBy = "repeatPage";
+        break;
+      }
       seenPageFingerprints.add(fp);
     }
 
     for (const it of items) {
-      if (created >= target) { stoppedBy = "limit"; break; }
-      if (scanned >= scanMax) { stoppedBy = "scanMax"; break; }
+      if (created >= target) {
+        stoppedBy = "limit";
+        break;
+      }
+      if (scanned >= scanMax) {
+        stoppedBy = "scanMax";
+        break;
+      }
 
       scanned += 1;
 
-      const dto = normalizeAmoCall(it);
+      const dto: any = normalizeAmoCall(it);
       if (!dto) continue;
 
-      const duration = dto.durationSec ?? 0;
+      // Требуем внешний идентификатор, иначе уникальность/идемпотентность ломается
+      const externalId = dto.externalId ? String(dto.externalId) : "";
+      if (!externalId) {
+        // просто пропускаем, чтобы не создавать мусор
+        continue;
+      }
+
+      const duration = Number(dto.durationSec ?? 0) || 0;
 
       if (!duration) durationMissing += 1;
       else if (duration < minDurationSec) durationLt += 1;
       else durationGte += 1;
 
-      // ключевое: короткие/неизвестные НЕ создаём
+      // короткие/неизвестные НЕ создаём
       if (skipShort) {
         if (!duration || duration < minDurationSec) {
           skippedShort += 1;
@@ -169,40 +216,82 @@ export async function syncAmoRecentCalls(params: {
         }
       }
 
-      const exists = await db.call.findFirst({
-        where: { companyId: params.companyId, externalId: dto.externalId },
+      // Быстрая проверка по compound unique: @@unique([companyId, externalId])
+      const exists = await db.call.findUnique({
+        where: {
+          companyId_externalId: {
+            companyId: params.companyId,
+            externalId,
+          },
+        },
         select: { id: true },
       });
+
       if (exists) {
         skippedExists += 1;
         continue;
       }
 
+      // ВАЖНО: пишем строго поля, которые реально есть в schema.prisma
       const call = await db.call.create({
         data: {
           companyId: params.companyId,
-          externalId: dto.externalId,
+          externalId,
+
           occurredAt: dto.occurredAt ?? new Date(),
-          duration: dto.durationSec ?? 0,
-          direction: dto.direction ?? "unknown",
-          phone: dto.phone ?? null,
-          audioUrl: dto.audioUrl ?? null,
+          duration: dto.durationSec ?? null,
+
+          direction: mapDirection(dto.direction),
+
+          // телефоны (phone -> clientPhone)
+          clientPhone: dto.phone ?? null,
+          linePhone: dto.linePhone ?? null,
+
+          // аудио: источник из amo/телефонии
+          audioUrlExternal: dto.audioUrl ?? null,
+
+          // наш storage — позже (когда будешь скачивать/класть в S3)
+          audioUrl: null,
+
+          // amo сущности (если normalize отдаёт)
+          leadId: dto.leadId ?? null,
+          leadName: dto.leadName ?? null,
+          leadUrl: dto.leadUrl ?? null,
+
+          pipelineId: dto.pipelineId ?? null,
+          pipelineName: dto.pipelineName ?? null,
+
+          stageId: dto.stageId ?? null,
+          stageName: dto.stageName ?? null,
+
+          amountKzt: dto.amountKzt ?? null,
+
           status: "NEW",
+
           meta: dto.raw ?? {},
-        } as any,
+        },
         select: { id: true },
       });
 
       created += 1;
 
-      // ВАЖНО: в очередь отдаём call.id, а не externalId
+      // В очередь отдаём call.id
       await enqueueCallTask(call.id);
     }
 
-    if (created >= target) { stoppedBy = "limit"; break; }
-    if (scanned >= scanMax) { stoppedBy = "scanMax"; break; }
+    if (created >= target) {
+      stoppedBy = "limit";
+      break;
+    }
+    if (scanned >= scanMax) {
+      stoppedBy = "scanMax";
+      break;
+    }
 
-    if (items.length < perPage) { stoppedBy = "shortPage"; break; }
+    if (items.length < perPage) {
+      stoppedBy = "shortPage";
+      break;
+    }
   }
 
   const message =
