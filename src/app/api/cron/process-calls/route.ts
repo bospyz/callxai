@@ -16,6 +16,15 @@ import {
 
 const CRON_SECRET = process.env.CRON_SECRET;
 
+function getErrorMessage(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  try {
+    return typeof e === "string" ? e : JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
+}
+
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const secret = searchParams.get("secret");
@@ -24,7 +33,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, message: "Forbidden" }, { status: 403 });
   }
 
-    const limitParam = searchParams.get("limit") ?? "20";
+  const limitParam = searchParams.get("limit") ?? "20";
   const limit = Math.max(1, Math.min(200, Number(limitParam) || 20));
 
   try {
@@ -39,7 +48,7 @@ export async function GET(req: NextRequest) {
     let queued = 0;
     for (const c of calls) {
       await enqueueCallTask(c.id);
-      queued++;
+      queued += 1;
     }
 
     // 2) Reset stuck tasks
@@ -63,17 +72,19 @@ export async function GET(req: NextRequest) {
         await processCall(t.callId);
         await markTaskDone(t.id);
         processed += 1;
-      } catch (err: any) {
-        const msg = err?.message ?? String(err ?? "Unknown error");
+      } catch (e: unknown) {
+        const msg = getErrorMessage(e);
+
         await markTaskError(t.id, t.attempts + 1, msg);
         errors += 1;
 
+        // Best-effort: mark call as ERROR, but do not fail whole cron if update fails
         try {
           await db.call.update({
             where: { id: t.callId },
             data: { status: CallStatus.ERROR, meta: { error: msg } },
           });
-        } catch (_) {
+        } catch {
           // ignore
         }
       }
@@ -88,13 +99,13 @@ export async function GET(req: NextRequest) {
       errors,
       message: `Queued=${queued} Reset=${reset} Claimed=${claimed} Processed=${processed} Errors=${errors}`,
     });
-  } catch (err: any) {
-    console.error("[cron/process-calls] failed", err);
-    const msg = err?.message ?? String(err ?? "Unknown error");
+  } catch (e: unknown) {
+    console.error("[cron/process-calls] failed", e);
+    const msg = getErrorMessage(e);
+
     return NextResponse.json(
       { ok: false, message: "DB temporarily unavailable", error: msg },
       { status: 503 }
     );
   }
 }
-

@@ -49,6 +49,7 @@ enum CallTaskStatus {
 enum CallDirection {
   INBOUND
   OUTBOUND
+  UNKNOWN
 }
 
 model Company {
@@ -139,11 +140,9 @@ model Manager {
 
   calls Call[]
 
-  @@index([companyId])
-
-
   // ✅ ВАЖНО: уникальность менеджера в рамках компании по amoUserId
   @@unique([companyId, amoUserId], name: "companyId_amoUserId")
+  @@index([companyId])
 }
 
 model Call {
@@ -319,20 +318,19 @@ model CallTask {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-callId String @unique
+  callId String @unique
 
-  call   Call   @relation(fields: [callId], references: [id], onDelete: Cascade)
+  call Call @relation(fields: [callId], references: [id], onDelete: Cascade)
 
   status   CallTaskStatus @default(NEW)
   error    String?
   attempts Int            @default(0)
 
-  lockedAt       DateTime?
-  nextRunAt      DateTime?
-  lastAttemptAt  DateTime?
+  lockedAt      DateTime?
+  nextRunAt     DateTime?
+  lastAttemptAt DateTime?
+
   @@index([status, nextRunAt])
   @@index([lockedAt])
-
   @@index([status, createdAt])
-
 }

@@ -1,7 +1,7 @@
 ﻿ // scripts/cron/sync_amocrm_recent_calls.ts
 
 import { PrismaClient, IntegrationType } from "@prisma/client";
-import { syncAmoRecentCalls } from "@/lib/amocrm";
+import { syncAmoRecentCalls } from "@/lib/amocrm-sync";
 
 const prisma = new PrismaClient();
 
@@ -33,10 +33,14 @@ async function main() {
     if (!integration.companyId) continue;
 
     try {
-      const res = await syncAmoRecentCalls({
-        companyId: integration.companyId,
-        limit: 100,
-      });
+ const res = await syncAmoRecentCalls({
+  companyId: integration.companyId,
+  limit: 100,
+  days: 7,
+  skipShort: false,
+  minDurationSec: 0,
+});
+
 
       console.log(
         `[Cron] company=${integration.companyId} -> ok=${res.ok} created=${res.created} msg="${res.message}"`

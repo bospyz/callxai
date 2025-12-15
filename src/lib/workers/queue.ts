@@ -1,100 +1,21 @@
 ﻿// src/lib/workers/queue.ts
 
-
 import { enqueueCallTask } from "@/lib/workers/task-queue";
-import { CallStatus } from "@prisma/client";
-import { db } from "@/lib/db";
-import { processCall } from "@/lib/call-analysis";
-import { logError, logInfo } from "@/lib/logger/Sentry";
 
+/**
+ * Legacy type (kept for compatibility with older callers).
+ * In production we enqueue by callId into DB-backed queue.
+ */
 export type CallJob = {
   callId: string;
 };
 
-let queue: CallJob[] = [];
-let isProcessing = false;
-
 /**
- * Добавляет звонок в очередь обработки HYPERFLOW:
- * download → transcribe → analyze → DONE.
+ * Adds a call to processing queue (DB-backed).
+ * NOTE:
+ * - In-memory queues are not reliable in serverless (Vercel) and will lose tasks.
+ * - This wrapper exists so older code can keep calling enqueueCallProcessing.
  */
 export async function enqueueCallProcessing(job: CallJob): Promise<void> {
-  // DEPRECATED: redirect to DB-backed queue.
   await enqueueCallTask(job.callId);
 }
-
-/**
- * Обрабатывает следующий звонок из очереди.
- * Простая in-memory очередь в пределах одного процесса.
- */
-async function processNext(): Promise<void> {
-  if (isProcessing) return;
-  if (queue.length === 0) return;
-
-  isProcessing = true;
-
-  const job = queue.shift();
-  if (!job) {
-    isProcessing = false;
-    return;
-  }
-
-  const { callId } = job;
-
-  logInfo("Processing call from queue", {
-    context: "call-queue.processNext",
-    extra: { callId },
-  });
-
-  try {
-    // помечаем звонок как PROCESSING
-    await db.call.update({
-      where: { id: callId },
-      data: {
-        status: CallStatus.PROCESSING,
-      },
-    });
-
-    // основной AI-пайплайн
-    await processCall(callId);
-  } catch (err: any) {
-    logError(err, {
-      context: "call-queue.processNext",
-      extra: { callId },
-    });
-
-    const message = String(err?.message || err || "Unknown error");
-
-    try {
-      // достаём текущее meta, чтобы не затирать существующие поля
-      const existing = await db.call.findUnique({
-        where: { id: callId },
-        select: { meta: true },
-      });
-
-      await db.call.update({
-        where: { id: callId },
-        data: {
-          status: CallStatus.ERROR,
-          meta: {
-            ...(existing?.meta as any),
-            error: message,
-          },
-        },
-      });
-    } catch (updateErr) {
-      logError(updateErr, {
-        context: "call-queue.markError",
-        extra: { callId },
-      });
-    }
-  } finally {
-    isProcessing = false;
-
-    // если в очереди ещё есть задачи — продолжаем
-    if (queue.length > 0) {
-      void processNext();
-    }
-  }
-}
-
