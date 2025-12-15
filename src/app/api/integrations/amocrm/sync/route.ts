@@ -1,241 +1,163 @@
-﻿// src/lib/amocrm-sync.ts
-import { db } from "@/lib/db";
-import { enqueueCallTask } from "@/lib/workers/task-queue";
-import { amoRequest, normalizeAmoCall } from "@/lib/amocrm";
+﻿// src/app/api/integrations/amocrm/sync/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { requireAuthWithCompany } from "@/lib/auth-guard";
+import { syncAmoRecentCalls } from "@/lib/amocrm-sync";
+import { getCallsQuota, getQuotaForImport, getBillableMinDurationSec } from "@/lib/call-quota";
 
-type StopReason = "limit" | "scanMax" | "repeatPage" | "noItems" | "shortPage";
-
-export async function syncAmoRecentCalls(params: {
-  companyId: string;
-
-  // сколько "боевых" (>= minDurationSec) надо СОЗДАТЬ
+type SyncBody = {
   limit?: number;
-
-  // период, за который тянем сырьё (передаём в API как since)
   days?: number;
-
-  // фильтровать короткие ДО insert
   skipShort?: boolean;
-
-  // порог боевого звонка (обычно 30)
   minDurationSec?: number;
+};
 
-  // сколько "сырья" максимум сканируем
-  scanMax?: number;
+function clampInt(v: any, min: number, max: number, fallback: number) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(n)));
+}
 
-  // размер страницы API
-  perPage?: number;
+function buildLimitReachedMessage(plan: string, limit: number | null) {
+  const p = String(plan || "free").toLowerCase();
+  if (limit == null) return "Тариф ENTERPRISE — звонков безлимит, но импорт сейчас недоступен.";
+  if (p === "free") return `Лимит в ${limit} бесплатных звонков исчерпан. Подключи тариф START, чтобы продолжить анализ звонков.`;
+  return `Лимит в ${limit} звонков по текущему тарифу исчерпан. Обнови тариф или свяжись с поддержкой, чтобы увеличить лимит.`;
+}
 
-  // ключ для _embedded (если используешь)
-  embeddedKey?: string;
+export async function POST(req: NextRequest) {
+  try {
+    const { companyId } = await requireAuthWithCompany();
 
-  // endpoint (например "/api/v4/....")
-  path?: string;
-}): Promise<{
-  ok: boolean;
+    let body: SyncBody = {};
+    try {
+      body = (await req.json()) as SyncBody;
+    } catch {
+      body = {};
+    }
 
-  created: number;
-  scanned: number;
+    const quota = await getCallsQuota(companyId);
+    const planKey = quota.plan; // "free" | "start" | "pro" | "enterprise"
+    const billableMin = getBillableMinDurationSec(planKey); // обычно 30
 
-  skippedShort: number;
-  skippedExists: number;
+    // правила
+    let requestedLimit = clampInt(body.limit, 1, 5000, 50);
+    let days = clampInt(body.days, 1, 90, 7);
+    let skipShort = body.skipShort === true;
+    let minDurationSec = clampInt(body.minDurationSec, 5, 3600, billableMin);
 
-  durationMissing: number;
-  durationLt: number;
-  durationGte: number;
+    // FREE: сервер источник правды
+    if (planKey === "free") {
+      requestedLimit = 30;
+      days = 7;
+      skipShort = true;
+      minDurationSec = billableMin;
+    } else {
+      if (skipShort) minDurationSec = Math.max(minDurationSec, billableMin);
+    }
 
-  stoppedBy?: StopReason;
+    // квота: сколько реально можно создать сейчас
+    const { allowed: effectiveLimit, quota: quotaForRun } = await getQuotaForImport(
+      companyId,
+      requestedLimit
+    );
 
-  // диагностика
-  lastPage: number;
-  lastItemsCount: number;
+    const limitReached =
+      quotaForRun.limit !== null &&
+      (effectiveLimit <= 0 || (quotaForRun.remaining ?? 0) <= 0);
 
-  message: string;
-}> {
-  const path = params.path || process.env.AMO_CALLS_PATH;
-  if (!path) {
-    return {
-      ok: false,
-      created: 0,
-      scanned: 0,
-      skippedShort: 0,
-      skippedExists: 0,
-      durationMissing: 0,
-      durationLt: 0,
-      durationGte: 0,
-      stoppedBy: "noItems",
-      lastPage: 0,
-      lastItemsCount: 0,
-      message: "AMO_CALLS_PATH not set",
-    };
-  }
+    if (limitReached) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "LIMIT_REACHED",
+          error: buildLimitReachedMessage(quotaForRun.plan, quotaForRun.limit),
+          plan: quotaForRun.plan,
+          quota: quotaForRun,
+        },
+        { status: 402 }
+      );
+    }
 
-  const target = Math.max(1, Math.min(5000, Number(params.limit ?? 50) || 50));
-  const days = Math.max(1, Math.min(90, Number(params.days ?? 7) || 7));
-  const skipShort = Boolean(params.skipShort ?? false);
-  const minDurationSec = Math.max(0, Number(params.minDurationSec ?? 0) || 0);
+    if (effectiveLimit <= 0) {
+      return NextResponse.json(
+        {
+          ok: true,
+          requestedLimit,
+          limit: 0,
+          days,
+          skipShort,
+          minDurationSec: skipShort ? minDurationSec : null,
+          created: 0,
+          plan: quotaForRun.plan,
+          quota: quotaForRun,
+          message: "Доступных звонков по квоте не осталось. Обнови тариф, чтобы продолжить синхронизацию.",
+        },
+        { status: 200 }
+      );
+    }
 
-  const perPage = Math.max(10, Math.min(250, Number(params.perPage ?? 50) || 50));
-  const embeddedKey = params.embeddedKey ?? "items";
+    // safety cap (опционально)
+    const safeEffectiveLimit = planKey !== "free" ? Math.min(effectiveLimit, 2000) : effectiveLimit;
 
-  // IMPORTANT: scanMax должен быть достаточно большим, иначе ты не добьёшь target
-  const scanMax = Math.max(
-    Number(params.scanMax ?? 0) || 0,
-    target * 50,
-    20000
-  );
-
-  const sinceIso = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
-
-  // counters
-  let created = 0;
-  let scanned = 0;
-
-  let skippedShort = 0;
-  let skippedExists = 0;
-
-  let durationMissing = 0;
-  let durationLt = 0;
-  let durationGte = 0;
-
-  // diagnostics
-  let lastPage = 0;
-  let lastItemsCount = 0;
-  let stoppedBy: StopReason | undefined;
-
-  // detect "same page repeated" (API ignores pagination)
-  const seenPageFingerprints = new Set<string>();
-
-  // helper: build fingerprint from ids
-  function pageFingerprint(items: any[]): string {
-    const ids = items
-      .map((x) => String(x?.id ?? x?.uuid ?? x?.call_id ?? ""))
-      .filter(Boolean);
-
-    // Если id вообще нет — fingerprint будет пустым.
-    // Тогда repeatPage детект хуже, но лучше чем ничего.
-    return ids.slice(0, 25).join("|");
-  }
-
-  for (let page = 1; ; page++) {
-    if (created >= target) { stoppedBy = "limit"; break; }
-    if (scanned >= scanMax) { stoppedBy = "scanMax"; break; }
-
-    const raw = await amoRequest<any>({
-      companyId: params.companyId,
-      method: "GET",
-      path,
-      query: {
-        page,
-        limit: perPage,
-        since: sinceIso,
-      },
+    const amo = await syncAmoRecentCalls({
+      companyId,
+      limit: safeEffectiveLimit,
+      days,
+      skipShort,
+      minDurationSec,
+      // perPage/scanMax можно оставить по умолчанию
     });
 
-    const items: any[] =
-      (Array.isArray(raw) ? raw : null) ??
-      raw?._embedded?.[embeddedKey] ??
-      raw?._embedded?.items ??
-      raw?._embedded?.calls ??
-      raw?.items ??
-      [];
+    const updatedQuota = await getCallsQuota(companyId);
 
-    lastPage = page;
-    lastItemsCount = items.length;
+    return NextResponse.json(
+      {
+        ok: true,
+        requestedLimit,
+        limit: safeEffectiveLimit,
+        days,
+        skipShort,
+        minDurationSec: skipShort ? minDurationSec : null,
 
-    if (!items.length) { stoppedBy = "noItems"; break; }
+        created: amo.created,
 
-    const fp = pageFingerprint(items);
-    if (fp) {
-      if (seenPageFingerprints.has(fp)) {
-        stoppedBy = "repeatPage";
-        break;
-      }
-      seenPageFingerprints.add(fp);
+        // диагностика — это важно для твоего кейса "хочу 41, получаю 29"
+        debug: {
+          scanned: amo.scanned,
+          skippedShort: amo.skippedShort,
+          skippedExists: amo.skippedExists,
+          durationMissing: amo.durationMissing,
+          durationLt: amo.durationLt,
+          durationGte: amo.durationGte,
+          stoppedBy: amo.stoppedBy,
+          lastPage: amo.lastPage,
+          lastItemsCount: amo.lastItemsCount,
+        },
+
+        plan: updatedQuota.plan,
+        quota: updatedQuota,
+        message: `Импорт выполнен: создано ${amo.created} новых звонков из amoCRM. ${amo.message}`,
+      },
+      { status: 200 }
+    );
+  } catch (err: any) {
+    const msg = String(err?.message || err);
+
+    if (msg.includes("amoCRM access token expired")) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "AMO_TOKEN_EXPIRED",
+          error: "Токен AmoCRM истёк или невалиден. Переподключи интеграцию AmoCRM.",
+        },
+        { status: 401 }
+      );
     }
 
-    for (const it of items) {
-      if (created >= target) { stoppedBy = "limit"; break; }
-      if (scanned >= scanMax) { stoppedBy = "scanMax"; break; }
+    if (msg.startsWith("Unauthorized")) return new NextResponse("Unauthorized", { status: 401 });
+    if (msg.includes("No companyId in session")) return new NextResponse("No companyId in session", { status: 400 });
 
-      scanned += 1;
-
-      const dto = normalizeAmoCall(it);
-      if (!dto) continue;
-
-      const duration = dto.durationSec ?? 0;
-
-      // duration distribution
-      if (!duration) durationMissing += 1;
-      else if (duration < minDurationSec) durationLt += 1;
-      else durationGte += 1;
-
-      // ключевое правило
-      if (skipShort) {
-        if (!duration || duration < minDurationSec) {
-          skippedShort += 1;
-          continue;
-        }
-      }
-
-      // существование (уникальность)
-      const exists = await db.call.findFirst({
-        where: { companyId: params.companyId, externalId: dto.externalId },
-        select: { id: true },
-      });
-
-      if (exists) {
-        skippedExists += 1;
-        continue;
-      }
-
-      await db.call.create({
-        data: {
-          companyId: params.companyId,
-          externalId: dto.externalId,
-          occurredAt: dto.occurredAt ?? new Date(),
-          duration: dto.durationSec ?? 0,
-          direction: dto.direction ?? "unknown",
-          phone: dto.phone ?? null,
-          audioUrl: dto.audioUrl ?? null,
-          status: "NEW",
-          meta: dto.raw ?? {},
-        } as any,
-        select: { id: true },
-      });
-
-      created += 1;
-
-      // очередь обработки
-      // (если enqueueCallTask падает — лучше try/catch и лог, но оставляю строго)
-      await enqueueCallTask(dto.externalId as any);
-    }
-
-    if (created >= target) { stoppedBy = "limit"; break; }
-    if (scanned >= scanMax) { stoppedBy = "scanMax"; break; }
-
-    // если страница неполная — считаем что это конец (у многих API так)
-    if (items.length < perPage) { stoppedBy = "shortPage"; break; }
+    console.error("[API] /api/integrations/amocrm/sync error", err);
+    return new NextResponse("Internal Server Error", { status: 500 });
   }
-
-  const message =
-    `Synced ${created}/${target} calls ` +
-    `(scanned=${scanned}, skippedShort=${skippedShort}, skippedExists=${skippedExists}, ` +
-    `durationMissing=${durationMissing}, durationLt=${durationLt}, durationGte=${durationGte}, ` +
-    `stoppedBy=${stoppedBy ?? "?"}, lastPage=${lastPage}, lastItemsCount=${lastItemsCount})`;
-
-  return {
-    ok: true,
-    created,
-    scanned,
-    skippedShort,
-    skippedExists,
-    durationMissing,
-    durationLt,
-    durationGte,
-    stoppedBy,
-    lastPage,
-    lastItemsCount,
-    message,
-  };
 }

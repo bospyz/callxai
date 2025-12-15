@@ -3,41 +3,52 @@ import { db } from "@/lib/db";
 import { enqueueCallTask } from "@/lib/workers/task-queue";
 import { amoRequest, normalizeAmoCall } from "@/lib/amocrm";
 
+type StopReason = "limit" | "scanMax" | "repeatPage" | "noItems" | "shortPage";
+
 export async function syncAmoRecentCalls(params: {
   companyId: string;
 
   // сколько "боевых" (>= minDurationSec) надо СОЗДАТЬ
   limit?: number;
 
-  // период в днях
+  // период, за который тянем сырьё (передаём в API как since)
   days?: number;
 
-  // фильтр коротких
+  // фильтровать короткие ДО insert
   skipShort?: boolean;
 
-  // порог длительности (обычно 30)
+  // порог боевого звонка (обычно 30)
   minDurationSec?: number;
 
-  // safety cap по количеству сырых записей, чтобы не уйти в бесконечность
+  // сколько "сырья" максимум сканируем
   scanMax?: number;
 
-  // пагинация: размер страницы
+  // размер страницы API
   perPage?: number;
 
-  // ключ embedded
+  // ключ для _embedded
   embeddedKey?: string;
 
-  // endpoint
+  // endpoint (например "/api/v4/....")
   path?: string;
 }): Promise<{
   ok: boolean;
-  created: number;        // создано боевых
-  scanned: number;        // просмотрено сырых
-  skippedShort: number;   // отфильтровано как короткие/без duration
-  skippedExists: number;  // пропущено как уже существующие
-  durationMissing: number; // duration=0/undefined
-  durationLt: number;      // duration < minDurationSec
-  durationGte: number;     // duration >= minDurationSec
+
+  created: number;
+  scanned: number;
+
+  skippedShort: number;
+  skippedExists: number;
+
+  durationMissing: number;
+  durationLt: number;
+  durationGte: number;
+
+  stoppedBy?: StopReason;
+
+  lastPage: number;
+  lastItemsCount: number;
+
   message: string;
 }> {
   const path = params.path || process.env.AMO_CALLS_PATH;
@@ -51,11 +62,14 @@ export async function syncAmoRecentCalls(params: {
       durationMissing: 0,
       durationLt: 0,
       durationGte: 0,
+      stoppedBy: "noItems",
+      lastPage: 0,
+      lastItemsCount: 0,
       message: "AMO_CALLS_PATH not set",
     };
   }
 
-  const limit = Math.max(1, Math.min(5000, Number(params.limit ?? 50) || 50));
+  const target = Math.max(1, Math.min(5000, Number(params.limit ?? 50) || 50));
   const days = Math.max(1, Math.min(90, Number(params.days ?? 7) || 7));
   const skipShort = Boolean(params.skipShort ?? false);
   const minDurationSec = Math.max(0, Number(params.minDurationSec ?? 0) || 0);
@@ -63,13 +77,19 @@ export async function syncAmoRecentCalls(params: {
   const perPage = Math.max(10, Math.min(250, Number(params.perPage ?? 50) || 50));
   const embeddedKey = params.embeddedKey ?? "items";
 
-  // чем больше short-звонков в amo, тем больше нужно сканировать сырья
-  const scanMax = Math.max(Number(params.scanMax ?? 0) || 0, limit * 50, 20000);
+  // scanMax должен быть большим, иначе ты не добьёшь target,
+  // если много коротких/без duration/дубликатов
+  const scanMax = Math.max(
+    Number(params.scanMax ?? 0) || 0,
+    target * 50,
+    20000
+  );
 
   const sinceIso = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
 
   let created = 0;
   let scanned = 0;
+
   let skippedShort = 0;
   let skippedExists = 0;
 
@@ -77,12 +97,24 @@ export async function syncAmoRecentCalls(params: {
   let durationLt = 0;
   let durationGte = 0;
 
-  // защита от "пагинация не работает и возвращает одну и ту же страницу"
+  let lastPage = 0;
+  let lastItemsCount = 0;
+
+  let stoppedBy: StopReason | undefined;
+
+  // детект: API игнорирует пагинацию и возвращает одно и то же
   const seenPageFingerprints = new Set<string>();
 
+  function pageFingerprint(items: any[]): string {
+    const ids = items
+      .map((x) => String(x?.id ?? x?.uuid ?? x?.call_id ?? ""))
+      .filter(Boolean);
+    return ids.slice(0, 25).join("|");
+  }
+
   for (let page = 1; ; page++) {
-    if (created >= limit) break;
-    if (scanned >= scanMax) break;
+    if (created >= target) { stoppedBy = "limit"; break; }
+    if (scanned >= scanMax) { stoppedBy = "scanMax"; break; }
 
     const raw = await amoRequest<any>({
       companyId: params.companyId,
@@ -103,19 +135,20 @@ export async function syncAmoRecentCalls(params: {
       raw?.items ??
       [];
 
-    if (!items.length) break;
+    lastPage = page;
+    lastItemsCount = items.length;
 
-    // fingerprint page
-    const ids = items
-      .map((x) => String(x?.id ?? x?.uuid ?? ""))
-      .filter(Boolean);
-    const fp = ids.slice(0, 20).join("|");
-    if (fp && seenPageFingerprints.has(fp)) break;
-    if (fp) seenPageFingerprints.add(fp);
+    if (!items.length) { stoppedBy = "noItems"; break; }
+
+    const fp = pageFingerprint(items);
+    if (fp) {
+      if (seenPageFingerprints.has(fp)) { stoppedBy = "repeatPage"; break; }
+      seenPageFingerprints.add(fp);
+    }
 
     for (const it of items) {
-      if (created >= limit) break;
-      if (scanned >= scanMax) break;
+      if (created >= target) { stoppedBy = "limit"; break; }
+      if (scanned >= scanMax) { stoppedBy = "scanMax"; break; }
 
       scanned += 1;
 
@@ -128,7 +161,7 @@ export async function syncAmoRecentCalls(params: {
       else if (duration < minDurationSec) durationLt += 1;
       else durationGte += 1;
 
-      // ключевое: короткие/без duration НЕ СОЗДАЁМ
+      // ключевое: короткие/неизвестные НЕ создаём
       if (skipShort) {
         if (!duration || duration < minDurationSec) {
           skippedShort += 1;
@@ -161,16 +194,22 @@ export async function syncAmoRecentCalls(params: {
       });
 
       created += 1;
+
+      // ВАЖНО: в очередь отдаём call.id, а не externalId
       await enqueueCallTask(call.id);
     }
 
-    if (items.length < perPage) break;
+    if (created >= target) { stoppedBy = "limit"; break; }
+    if (scanned >= scanMax) { stoppedBy = "scanMax"; break; }
+
+    if (items.length < perPage) { stoppedBy = "shortPage"; break; }
   }
 
-  const msg =
-    created >= limit
-      ? `Synced ${created} billable calls`
-      : `Only ${created} billable calls found for this period (need ${limit}).`;
+  const message =
+    `Synced ${created}/${target} calls ` +
+    `(scanned=${scanned}, skippedShort=${skippedShort}, skippedExists=${skippedExists}, ` +
+    `durationMissing=${durationMissing}, durationLt=${durationLt}, durationGte=${durationGte}, ` +
+    `stoppedBy=${stoppedBy ?? "?"}, lastPage=${lastPage}, lastItemsCount=${lastItemsCount})`;
 
   return {
     ok: true,
@@ -181,6 +220,9 @@ export async function syncAmoRecentCalls(params: {
     durationMissing,
     durationLt,
     durationGte,
-    message: `${msg} (scanned=${scanned}, skippedShort=${skippedShort}, skippedExists=${skippedExists}, missingDur=${durationMissing}, lt=${durationLt}, gte=${durationGte})`,
+    stoppedBy,
+    lastPage,
+    lastItemsCount,
+    message,
   };
 }
