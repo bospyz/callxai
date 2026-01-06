@@ -3,27 +3,25 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { requireAuthWithCompany } from "@/lib/auth-guard";
 
+export const runtime = "nodejs";
+
 /**
- * Преобразование параметра периодности: "7d", "30d", "90d", "1w" и т.д.
+ * period: "7d", "30d", "90d", "1w", "48h" и т.д.
  */
 function getFromDate(periodParam: string | null): Date {
   const now = new Date();
 
   if (!periodParam) {
-    const d = new Date(now);
-    d.setDate(d.getDate() - 7);
-    return d;
+    return new Date(now.getTime() - 7 * 24 * 3600 * 1000);
   }
 
-  const match = /^(\d+)([hdw])$/.exec(periodParam);
+  const match = /^(\d+)([hdw])$/i.exec(periodParam.trim());
   if (!match) {
-    const d = new Date(now);
-    d.setDate(d.getDate() - 7);
-    return d;
+    return new Date(now.getTime() - 7 * 24 * 3600 * 1000);
   }
 
   const value = Number(match[1]);
-  const unit = match[2];
+  const unit = match[2].toLowerCase();
 
   let days = 7;
 
@@ -36,16 +34,22 @@ function getFromDate(periodParam: string | null): Date {
         days = value * 7;
         break;
       case "h":
-        days = 1;
+        days = Math.max(1, Math.ceil(value / 24));
         break;
       default:
         days = 7;
     }
   }
 
-  const from = new Date(now);
-  from.setDate(now.getDate() - days);
-  return from;
+  return new Date(now.getTime() - days * 24 * 3600 * 1000);
+}
+
+function csvEscape(v: any): string {
+  const s = v == null ? "" : String(v);
+  // Ты используешь ";" — экранируем кавычки и переносы
+  const needsQuotes = s.includes(";") || s.includes('"') || s.includes("\n") || s.includes("\r");
+  const escaped = s.replace(/"/g, '""').replace(/\r?\n/g, " ");
+  return needsQuotes ? `"${escaped}"` : escaped;
 }
 
 export async function GET(req: NextRequest) {
@@ -57,31 +61,52 @@ export async function GET(req: NextRequest) {
     const fromDate = getFromDate(period);
 
     // -------------------------------------------------------------------
-    // 1. Получаем звонки для выгрузки
+    // 1) Calls for export
     // -------------------------------------------------------------------
     const calls = await db.call.findMany({
       where: {
         companyId,
         createdAt: { gte: fromDate },
       },
-      orderBy: {
-        createdAt: "desc",
-      },
-      include: {
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        createdAt: true,
+        status: true,
+        duration: true,
+        externalId: true,
+
+        // ВАЖНО: score здесь не берём из Call
+        callScore: {
+          select: {
+            totalScore: true,
+            // если есть в модели:
+            // sentiment: true,
+            // summary: true,
+          },
+        },
+
+        // транскрипт — из таблицы транскриптов (правильнее)
+        callTranscript: {
+          select: { rawTranscript: true },
+        },
+
+        // менеджер
         manager: { select: { name: true } },
-        // score: true, // УБРАЛИ: score — скалярное поле, а не relation
+
+        // если в Call реально есть sentiment/transcript — можно вернуть как fallback через any ниже
       },
     });
 
     // -------------------------------------------------------------------
-    // 2. Агрегация по менеджерам
+    // 2) Aggregation by manager
     // -------------------------------------------------------------------
     type Agg = {
       total: number;
       done: number;
       scoreSum: number;
       scoreCount: number;
-      lowScoreCount: number; // < 60
+      lowScoreCount: number;  // < 60
       highScoreCount: number; // >= 80
     };
 
@@ -105,48 +130,36 @@ export async function GET(req: NextRequest) {
       agg.total += 1;
       if (c.status === "DONE") agg.done += 1;
 
-      if (typeof c.score === "number") {
-        agg.scoreSum += c.score;
+      const score = c.callScore?.totalScore;
+      if (typeof score === "number") {
+        agg.scoreSum += score;
         agg.scoreCount += 1;
-        if (c.score < 60) agg.lowScoreCount += 1;
-        if (c.score >= 80) agg.highScoreCount += 1;
+        if (score < 60) agg.lowScoreCount += 1;
+        if (score >= 80) agg.highScoreCount += 1;
       }
     }
 
-    // Сборка строк для блока менеджеров
     const managerRows: string[][] = [];
 
     for (const [name, agg] of managersMap.entries()) {
-      const avgScore =
-        agg.scoreCount > 0 ? Math.round(agg.scoreSum / agg.scoreCount) : 0;
-
-      const doneRate =
-        agg.total > 0 ? Math.round((agg.done * 100) / agg.total) : 0;
-
-      const lowShare =
-        agg.scoreCount > 0
-          ? Math.round((agg.lowScoreCount * 100) / agg.scoreCount)
-          : 0;
+      const avgScore = agg.scoreCount > 0 ? Math.round(agg.scoreSum / agg.scoreCount) : 0;
+      const doneRate = agg.total > 0 ? Math.round((agg.done * 100) / agg.total) : 0;
+      const lowShare = agg.scoreCount > 0 ? Math.round((agg.lowScoreCount * 100) / agg.scoreCount) : 0;
 
       let advice = "Нормальный уровень, без ярких паттернов.";
 
       if (avgScore < 40) {
-        advice =
-          "Очень слабый уровень. Нужен разбор скрипта и коучинг на каждом этапе.";
+        advice = "Очень слабый уровень. Нужен разбор скрипта и коучинг на каждом этапе.";
       } else if (avgScore < 60) {
-        advice =
-          "Уровень ниже нормы. Важно усилить приветствие, выявление потребности и закрытие.";
+        advice = "Уровень ниже нормы. Усиль приветствие, выявление потребности и закрытие.";
       } else if (avgScore < 80) {
-        advice =
-          "Средний уровень. Работай над возражениями и структурой закрытия.";
+        advice = "Средний уровень. Работай над возражениями и структурой закрытия.";
       } else {
-        advice =
-          "Сильный менеджер. Используй его звонки как эталон обучения.";
+        advice = "Сильный менеджер. Используй его звонки как эталон обучения.";
       }
 
       if (lowShare > 40) {
-        advice +=
-          " Много слабых звонков — проанализируй, на каких этапах чаще ошибки.";
+        advice += " Много слабых звонков — проверь, на каких этапах чаще ошибки.";
       }
 
       managerRows.push([
@@ -164,7 +177,7 @@ export async function GET(req: NextRequest) {
     managerRows.sort((a, b) => Number(b[1]) - Number(a[1]));
 
     // -------------------------------------------------------------------
-    // 3. Сырые звонки
+    // 3) Raw calls rows
     // -------------------------------------------------------------------
     const callsHeader = [
       "id",
@@ -173,25 +186,31 @@ export async function GET(req: NextRequest) {
       "status",
       "score",
       "durationSeconds",
-      "sentiment",
       "externalId",
       "transcript",
     ];
 
-    const callRows = calls.map((c) => [
-      c.id,
-      c.createdAt.toISOString(),
-      c.manager?.name || "Без менеджера",
-      c.status,
-      c.score != null ? String(c.score) : "",
-      c.duration != null ? String(c.duration) : "",
-      c.sentiment ?? "",
-      c.externalId ?? "",
-      (c.transcript ?? "").replace(/\r?\n/g, " "),
-    ]);
+    const callRows = calls.map((c) => {
+      const score = c.callScore?.totalScore;
+      const transcript =
+        (c.callTranscript?.rawTranscript ?? "") ||
+        // fallback (если у тебя раньше было поле transcript в Call)
+        String((c as any).transcript ?? "");
+
+      return [
+        c.id,
+        c.createdAt.toISOString(),
+        c.manager?.name || "Без менеджера",
+        c.status,
+        typeof score === "number" ? String(score) : "",
+        c.duration != null ? String(c.duration) : "",
+        c.externalId ?? "",
+        transcript,
+      ];
+    });
 
     // -------------------------------------------------------------------
-    // 4. Формирование CSV
+    // 4) CSV build
     // -------------------------------------------------------------------
     const lines: string[] = [];
 
@@ -210,7 +229,7 @@ export async function GET(req: NextRequest) {
     );
 
     for (const row of managerRows) {
-      lines.push(row.join(";"));
+      lines.push(row.map(csvEscape).join(";"));
     }
 
     lines.push("");
@@ -218,11 +237,11 @@ export async function GET(req: NextRequest) {
     lines.push(callsHeader.join(";"));
 
     for (const row of callRows) {
-      lines.push(row.join(";"));
+      lines.push(row.map(csvEscape).join(";"));
     }
 
     const csvBody = lines.join("\n");
-    const csv = "\uFEFF" + csvBody;
+    const csv = "\uFEFF" + csvBody; // BOM для Excel
 
     return new NextResponse(csv, {
       status: 200,
@@ -235,18 +254,15 @@ export async function GET(req: NextRequest) {
     const msg = String(err?.message || err);
 
     if (msg.startsWith("Unauthorized")) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
     }
     if (msg.includes("No companyId in session")) {
-      return NextResponse.json(
-        { error: "No companyId in session" },
-        { status: 400 }
-      );
+      return NextResponse.json({ ok: false, error: "No companyId in session" }, { status: 400 });
     }
 
     console.error("[GET /api/calls/export] error", err);
     return NextResponse.json(
-      { error: err?.message || "Internal error" },
+      { ok: false, error: "Internal error", details: msg },
       { status: 500 }
     );
   }

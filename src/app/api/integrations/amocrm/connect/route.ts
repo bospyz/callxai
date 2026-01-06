@@ -24,14 +24,10 @@ export async function POST(req: Request) {
   }
 
   const body = await req.json();
-  const {
-    domain,
-    accessToken,
-    refreshToken,
-    clientId,
-    clientSecret,
-    redirectUri,
-  } = body;
+  const domain = String(body?.domain ?? "").trim();
+  const accessToken = String(body?.accessToken ?? "").trim();
+  const refreshTokenRaw =
+    body?.refreshToken != null ? String(body.refreshToken).trim() : "";
 
   if (!domain || !accessToken) {
     return new NextResponse("domain and accessToken are required", {
@@ -39,37 +35,35 @@ export async function POST(req: Request) {
     });
   }
 
+  // exp (сек) -> expiresAtMs
   const payload = decodeJwtPayload(accessToken) || {};
-  const expiresAt = payload.exp ? new Date(payload.exp * 1000) : null;
+  const expiresAtMs =
+    typeof payload.exp === "number"
+      ? payload.exp * 1000
+      : Date.now() + 60 * 60 * 1000; // fallback 1h
 
   const config = {
     domain,
     accessToken,
-    refreshToken: refreshToken || null,
-    clientId: clientId || null,
-    clientSecret: clientSecret || null,
-    redirectUri: redirectUri || null,
-    apiDomain: null,
-    lastSyncAt: null,
-    tokenExpiresAt: expiresAt ? expiresAt.toISOString() : null,
+    refreshToken: refreshTokenRaw.length > 0 ? refreshTokenRaw : null,
+    tokenExpiresAt: new Date(expiresAtMs).toISOString(),
+    connectedAt: new Date().toISOString(),
   };
 
   const integration = await db.integration.upsert({
+    // если у тебя в Prisma есть @@unique([companyId, type]) с именем companyId_type
     where: {
-      companyId_type: {
-        companyId,
-        type: IntegrationType.AMOCRM,
-      },
+      companyId_type: { companyId, type: IntegrationType.AMOCRM },
     } as any,
     create: {
       companyId,
       type: IntegrationType.AMOCRM,
       enabled: true,
-      config,
+      config: config as any,
     },
     update: {
       enabled: true,
-      config,
+      config: config as any,
     },
   });
 
@@ -77,5 +71,13 @@ export async function POST(req: Request) {
     ok: true,
     message: "Интеграция amoCRM подключена",
     integrationId: integration.id,
+    // полезно вернуть, чтобы сразу визуально проверить формат
+    config: {
+      domain: config.domain,
+      hasAccessToken: Boolean(config.accessToken),
+      hasRefreshToken: Boolean(config.refreshToken),
+      tokenExpiresAt: config.tokenExpiresAt,
+      connectedAt: config.connectedAt,
+    },
   });
 }

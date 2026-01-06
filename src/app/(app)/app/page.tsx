@@ -1,4 +1,4 @@
-﻿// src/app/(app)/app/page.tsx
+﻿// E:\callxai\src\app\(app)\app\page.tsx
 
 "use client";
 
@@ -9,7 +9,7 @@ import { motion } from "framer-motion";
 type CallItem = {
   id: string;
   status: string;
-  score: number | null;
+  score: number | null; // DTO score (from CallScore.totalScore), NOT Call.score in DB
   createdAt: string;
   managerName?: string | null;
   manager?: { name?: string | null };
@@ -21,6 +21,7 @@ type ManagerStat = {
   total: number;
   done: number;
   avgScore: number;
+  scoredCalls: number;
 };
 
 type PlanKey = "free" | "start" | "pro" | "enterprise";
@@ -32,11 +33,19 @@ type CallsQuota = {
   remaining: number | null;
 };
 
-const PERIOD_OPTIONS: { value: string; label: string }[] = [
-  { value: "7d", label: "7 дней" },
-  { value: "30d", label: "30 дней" },
-  { value: "90d", label: "90 дней" },
-  { value: "365d", label: "Все (365 дней)" },
+type AnalyticsSummary = {
+  totalCalls: number;
+  doneCalls: number;
+  errorCalls: number;
+  processingCalls: number;
+  avgScore: number | null;
+};
+
+const PERIOD_OPTIONS: { value: string; label: string; days: number }[] = [
+  { value: "7d", label: "7 дней", days: 7 },
+  { value: "30d", label: "30 дней", days: 30 },
+  { value: "90d", label: "90 дней", days: 90 },
+  { value: "365d", label: "Все (365 дней)", days: 365 },
 ];
 
 export default function AppDashboardPage() {
@@ -51,20 +60,27 @@ export default function AppDashboardPage() {
   const [quota, setQuota] = useState<CallsQuota | null>(null);
   const [quotaLoading, setQuotaLoading] = useState<boolean>(false);
 
-  // Загрузка звонков по выбранному периоду
+  const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState<boolean>(false);
+
+  function getDaysFromPeriod(p: string): number {
+    return PERIOD_OPTIONS.find((x) => x.value === p)?.days ?? 7;
+  }
+
+  // Load calls list (for latest calls + manager breakdown)
   useEffect(() => {
     async function load() {
       try {
         setLoading(true);
         setError(null);
+
         const res = await fetch(`/api/calls?period=${period}`);
-        if (!res.ok) {
-          throw new Error("Failed to load calls");
-        }
+        if (!res.ok) throw new Error("Failed to load calls");
+
         const data = await res.json();
         setCalls(Array.isArray(data.calls) ? data.calls : []);
       } catch (e: any) {
-        console.error("App dashboard load error", e);
+        console.error("[Dashboard] calls load error", e);
         setError(e?.message ?? "Ошибка загрузки данных");
       } finally {
         setLoading(false);
@@ -74,19 +90,51 @@ export default function AppDashboardPage() {
     load();
   }, [period]);
 
-  // Загрузка квоты по звонкам (лимит/использовано/остаток)
+  // Load analytics summary (top stats should come from here)
+  useEffect(() => {
+    async function loadSummary() {
+      try {
+        setSummaryLoading(true);
+
+        const days = getDaysFromPeriod(period);
+        const res = await fetch(`/api/analytics/summary?days=${days}`);
+        if (!res.ok) throw new Error("Failed to load summary");
+
+        const data = await res.json();
+        const s = (data?.summary ?? data) as AnalyticsSummary;
+
+        if (
+          typeof s?.totalCalls === "number" &&
+          typeof s?.doneCalls === "number" &&
+          typeof s?.errorCalls === "number" &&
+          typeof s?.processingCalls === "number"
+        ) {
+          setSummary(s);
+        } else {
+          setSummary(null);
+        }
+      } catch (e) {
+        console.error("[Dashboard] summary load error", e);
+        setSummary(null);
+      } finally {
+        setSummaryLoading(false);
+      }
+    }
+
+    loadSummary();
+  }, [period]);
+
+  // Load quota
   useEffect(() => {
     async function loadQuota() {
       try {
         setQuotaLoading(true);
+
         const res = await fetch("/api/billing/quota");
-        if (!res.ok) {
-          throw new Error("Failed to load quota");
-        }
+        if (!res.ok) throw new Error("Failed to load quota");
+
         const data = await res.json();
-        if (data?.quota) {
-          setQuota(data.quota as CallsQuota);
-        }
+        if (data?.quota) setQuota(data.quota as CallsQuota);
       } catch (e) {
         console.error("[Dashboard] quota load error", e);
       } finally {
@@ -97,28 +145,54 @@ export default function AppDashboardPage() {
     loadQuota();
   }, []);
 
-  const totalCalls = calls.length;
-  const analyzedCalls = calls.filter((c) => c.status === "DONE").length;
+  // ----- Top stats: prefer summary; fallback to calls if summary unavailable -----
+  const totalCalls = summary?.totalCalls ?? calls.length;
 
-  const scoredCalls = calls.filter(
-    (c) => typeof c.score === "number" && c.score !== null
-  );
+  const analyzedCalls =
+    summary?.doneCalls ?? calls.filter((c) => c.status === "DONE").length;
+
+  const failedCalls =
+    summary?.errorCalls ?? calls.filter((c) => c.status === "ERROR").length;
+
+  const processingCalls =
+    summary?.processingCalls ??
+    calls.filter((c) => c.status === "PROCESSING" || c.status === "NEW").length;
+
   const avgScore =
-    scoredCalls.length > 0
-      ? Math.round(
-          scoredCalls.reduce((sum, c) => sum + (c.score ?? 0), 0) /
-            scoredCalls.length
-        )
-      : 0;
+    summary?.avgScore != null
+      ? Math.round(summary.avgScore)
+      : (() => {
+          const scored = calls.filter(
+            (c) => typeof c.score === "number" && c.score !== null
+          );
+          return scored.length > 0
+            ? Math.round(
+                scored.reduce((sum, c) => sum + (c.score ?? 0), 0) / scored.length
+              )
+            : 0;
+        })();
 
   const doneRate =
     totalCalls > 0 ? Math.round((analyzedCalls * 100) / totalCalls) : 0;
 
-  const pendingCalls = totalCalls - analyzedCalls;
+  // IMPORTANT: pending из summary лучше считать как (total - done - error - processing)
+  // но если summary != calls, то это даёт более честную картину очереди.
+  const pendingCalls = useMemo(() => {
+    if (summary) {
+      const pending =
+        summary.totalCalls -
+        summary.doneCalls -
+        summary.errorCalls -
+        summary.processingCalls;
+      return Math.max(pending, 0);
+    }
+    // fallback
+    return Math.max(calls.length - analyzedCalls, 0);
+  }, [summary, calls.length, analyzedCalls]);
 
   const hasCalls = totalCalls > 0;
 
-  // Сводка по менеджерам
+  // Managers breakdown computed from calls DTO
   const managerStats: ManagerStat[] = useMemo(() => {
     const map = new Map<
       string,
@@ -135,24 +209,24 @@ export default function AppDashboardPage() {
       if (!map.has(name)) {
         map.set(name, { total: 0, done: 0, scoreSum: 0, scoreCount: 0 });
       }
+
       const entry = map.get(name)!;
       entry.total += 1;
       if (c.status === "DONE") entry.done += 1;
-      if (typeof c.score === "number") {
+
+      if (typeof c.score === "number" && c.score !== null) {
         entry.scoreSum += c.score;
         entry.scoreCount += 1;
       }
     }
 
-    const stats: ManagerStat[] = Array.from(map.entries()).map(
-      ([name, v]) => ({
-        name,
-        total: v.total,
-        done: v.done,
-        avgScore:
-          v.scoreCount > 0 ? Math.round(v.scoreSum / v.scoreCount) : 0,
-      })
-    );
+    const stats: ManagerStat[] = Array.from(map.entries()).map(([name, v]) => ({
+      name,
+      total: v.total,
+      done: v.done,
+      scoredCalls: v.scoreCount,
+      avgScore: v.scoreCount > 0 ? Math.round(v.scoreSum / v.scoreCount) : 0,
+    }));
 
     stats.sort((a, b) => b.total - a.total);
     return stats;
@@ -160,27 +234,25 @@ export default function AppDashboardPage() {
 
   const topManagers = managerStats.slice(0, 5);
 
-  // Доп. агрегации
-  const failedCalls = calls.filter((c) => c.status === "ERROR").length;
-  const newCalls = calls.filter((c) => c.status === "NEW").length;
-  const processingCalls = calls.filter(
-    (c) => c.status === "PROCESSING"
-  ).length;
-
   const bestByVolume = managerStats[0];
+
   const bestByScore = [...managerStats]
-    .filter((m) => m.avgScore > 0)
+    .filter((m) => m.scoredCalls > 0)
     .sort((a, b) => b.avgScore - a.avgScore)[0];
 
-  // Последние 5 звонков
-  const latestCalls = [...calls]
-    .sort(
-      (a, b) =>
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    )
-    .slice(0, 5);
+  // Latest calls (API обычно уже отдаёт desc по createdAt)
+  const latestCalls = useMemo(() => {
+    // Если вдруг API НЕ сортирует — раскомментируй сортировку ниже.
+    // return [...calls]
+    //   .sort(
+    //     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    //   )
+    //   .slice(0, 5);
 
-  // Экспорт Excel по ТЕКУЩЕМУ периоду
+    return calls.slice(0, 5);
+  }, [calls]);
+
+  // Export CSV for current period
   async function handleExportExcel() {
     try {
       setExportLoading(true);
@@ -211,7 +283,7 @@ export default function AppDashboardPage() {
     }
   }
 
-  // ---------- СТОРИС-КАРТОЧКИ / СЛАЙДЕР ИНСАЙТОВ ----------
+  // ---------- INSIGHTS ----------
   type InsightSlide = {
     id: string;
     badge: string;
@@ -329,12 +401,12 @@ export default function AppDashboardPage() {
       });
     }
 
-    if (newCalls > 0 || processingCalls > 0) {
+    if (processingCalls > 0) {
       slides.push({
         id: "live-6",
         badge: "⏱ Живой поток",
         title: "Новые звонки продолжают поступать",
-        subtitle: `NEW: ${newCalls} · PROCESSING: ${processingCalls}`,
+        subtitle: `В обработке: ${processingCalls}`,
         description:
           "CallX работает в фоне и разбирает свежие звонки. Возвращайся к дашборду в течение дня и следи за динамикой качества.",
         tone: "ok",
@@ -386,7 +458,6 @@ export default function AppDashboardPage() {
     avgScore,
     pendingCalls,
     failedCalls,
-    newCalls,
     processingCalls,
     bestByVolume,
     bestByScore,
@@ -413,30 +484,27 @@ export default function AppDashboardPage() {
     setCurrentInsight(index);
   }
 
-function formatPlanName(plan?: PlanKey) {
-  if (!plan) return "—";
+  function formatPlanName(plan?: PlanKey) {
+    if (!plan) return "—";
 
-  switch (plan) {
-    case "free":
-      return "FREE";
-    case "start":
-      return "START";
-    case "pro":
-      return "PRO";
-    case "enterprise":
-      return "ENTERPRISE";
-    default: {
-      // на будущее, если расширишь union-типы тарифов
-      const fallback = plan as string;
-      return fallback.toUpperCase();
+    switch (plan) {
+      case "free":
+        return "FREE";
+      case "start":
+        return "START";
+      case "pro":
+        return "PRO";
+      case "enterprise":
+        return "ENTERPRISE";
+      default: {
+        const fallback = plan as string;
+        return fallback.toUpperCase();
+      }
     }
   }
-}
-
 
   return (
     <main className="min-h-screen w-full bg-black text-neutral-50">
-      {/* pt/pb — чтобы не залезать под мобильный хедер и нижнюю навигацию */}
       <div className="mx-auto flex w-full flex-col gap-8 px-3 sm:px-6 lg:px-10 xl:px-16 pt-4 sm:pt-6 lg:pt-8 pb-24 sm:pb-12">
         {/* HEADER */}
         <header className="flex flex-col gap-3 lg:gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -448,16 +516,24 @@ function formatPlanName(plan?: PlanKey) {
                 live-обновление каждые несколько минут
               </span>
             </div>
+
             <h1 className="text-xl sm:text-3xl xl:text-[32px] font-semibold tracking-tight">
               Обзор отдела продаж{" "}
               <span className="text-neutral-500">
                 ({PERIOD_OPTIONS.find((p) => p.value === period)?.label})
               </span>
             </h1>
+
             <p className="text-[12px] sm:text-sm text-neutral-400 max-w-2xl">
               Сколько звонков сделали, сколько CallX успел разобрать и какой
               средний балл по отделу. Всё в одном экране — без отчётов в Excel.
             </p>
+
+            {summaryLoading && (
+              <p className="text-[11px] text-neutral-600">
+                Обновляем агрегаты аналитики…
+              </p>
+            )}
           </div>
 
           <div className="flex flex-col items-stretch sm:items-end gap-2 sm:gap-3 text-[11px] sm:text-xs text-neutral-400">
@@ -480,7 +556,7 @@ function formatPlanName(plan?: PlanKey) {
             <button
               onClick={handleExportExcel}
               disabled={exportLoading}
-              className="mt-1 inline-flex items-center justify-center gap-2 rounded-full border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-[11px] text-neutral-200 hover:border-emerald-400 hover:text:white hover:bg-neutral-900 transition disabled:opacity-60 disabled:cursor-not-allowed"
+              className="mt-1 inline-flex items-center justify-center gap-2 rounded-full border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-[11px] text-neutral-200 hover:border-emerald-400 hover:text-white hover:bg-neutral-900 transition disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {exportLoading ? "Готовим Excel…" : "Скачать Excel отчёт"}
             </button>
@@ -532,7 +608,7 @@ function formatPlanName(plan?: PlanKey) {
               transition={{ duration: 0.35 }}
               className="grid gap-4 md:grid-cols-4 xl:grid-cols-4"
             >
-              {/* Всего звонков */}
+              {/* Total calls */}
               <div className="rounded-2xl border border-neutral-800 bg-gradient-to-br from-neutral-950 via-neutral-950 to-neutral-900/90 p-4 shadow-[0_18px_40px_rgba(0,0,0,0.7)] hover:shadow-[0_22px_60px_rgba(0,0,0,0.9)] transition-shadow">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] uppercase text-neutral-500">
@@ -550,7 +626,7 @@ function formatPlanName(plan?: PlanKey) {
                 </p>
               </div>
 
-              {/* Проанализировано */}
+              {/* Analyzed */}
               <div className="rounded-2xl border border-neutral-800 bg-gradient-to-br from-neutral-950 via-neutral-950 to-neutral-900/90 p-4 shadow-[0_18px_40px_rgba(0,0,0,0.7)] hover:shadow-[0_22px_60px_rgba(0,0,0,0.9)] transition-shadow">
                 <span className="text-[11px] uppercase text-neutral-500">
                   Проанализировано
@@ -579,7 +655,7 @@ function formatPlanName(plan?: PlanKey) {
                 )}
               </div>
 
-              {/* Средний балл */}
+              {/* Avg score */}
               <div className="rounded-2xl border border-neutral-800 bg-gradient-to-br from-neutral-950 via-neutral-950 to-neutral-900/90 p-4 shadow-[0_18px_40px_rgba(0,0,0,0.7)] hover:shadow-[0_22px_60px_rgba(0,0,0,0.9)] transition-shadow">
                 <span className="text-[11px] uppercase text-neutral-500">
                   Средний балл по отделу
@@ -598,14 +674,16 @@ function formatPlanName(plan?: PlanKey) {
                 </p>
               </div>
 
-              {/* Квота по звонкам */}
+              {/* Quota */}
               <div className="rounded-2xl border border-neutral-800 bg-gradient-to-br from-neutral-950 via-neutral-950 to-neutral-900/90 p-4 shadow-[0_18px_40px_rgba(0,0,0,0.7)] hover:shadow-[0_22px_60px_rgba(0,0,0,0.9)] transition-shadow">
                 <span className="text-[11px] uppercase text-neutral-500">
                   Лимит звонков в месяц
                 </span>
+
                 {quotaLoading && (
                   <div className="mt-2 h-6 w-24 rounded-full bg-neutral-900 animate-pulse" />
                 )}
+
                 {!quotaLoading && quota && (
                   <>
                     <div className="mt-2 text-sm">
@@ -624,9 +702,7 @@ function formatPlanName(plan?: PlanKey) {
                       {quota.limit !== null && (
                         <p className="mt-1 text-[12px] text-neutral-400">
                           Использовано:{" "}
-                          <span className="text-neutral-100">
-                            {quota.used}
-                          </span>{" "}
+                          <span className="text-neutral-100">{quota.used}</span>{" "}
                           · Осталось:{" "}
                           <span className="text-neutral-100">
                             {quota.remaining ?? 0}
@@ -634,6 +710,7 @@ function formatPlanName(plan?: PlanKey) {
                         </p>
                       )}
                     </div>
+
                     {quota.limit !== null && (
                       <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-neutral-900">
                         <div
@@ -643,9 +720,7 @@ function formatPlanName(plan?: PlanKey) {
                               quota.limit > 0
                                 ? Math.min(
                                     100,
-                                    Math.round(
-                                      (quota.used / quota.limit) * 100
-                                    )
+                                    Math.round((quota.used / quota.limit) * 100)
                                   )
                                 : 0
                             }%`,
@@ -655,6 +730,7 @@ function formatPlanName(plan?: PlanKey) {
                     )}
                   </>
                 )}
+
                 {!quotaLoading && !quota && (
                   <p className="mt-2 text-[12px] text-neutral-500">
                     Информация о квоте недоступна.
@@ -663,7 +739,7 @@ function formatPlanName(plan?: PlanKey) {
               </div>
             </motion.div>
 
-            {/* ---------- БОЛЬШАЯ СТОРИС-КАРТОЧКА ---------- */}
+            {/* INSIGHTS */}
             {currentSlide && (
               <section className="mt-6 space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
@@ -688,7 +764,6 @@ function formatPlanName(plan?: PlanKey) {
                     transition={{ duration: 0.25 }}
                     className="w-full min-h-[320px] sm:min-h-[45vh] max-h-[520px] rounded-3xl border border-neutral-800/80 bg-neutral-950/95 shadow-[0_40px_120px_rgba(0,0,0,0.95)] overflow-hidden relative flex flex-col justify-between p-5 sm:p-8"
                   >
-                    {/* Градиентный фон по тону */}
                     <div
                       className={`pointer-events-none absolute inset-0 opacity-80 bg-gradient-to-br ${
                         currentSlide.tone === "danger"
@@ -698,10 +773,8 @@ function formatPlanName(plan?: PlanKey) {
                           : "from-sky-500/25 via-sky-500/5 to-black"
                       }`}
                     />
-                    {/* Лёгкая сетка поверх */}
                     <div className="pointer-events-none absolute inset-0 opacity-[0.16] bg-[radial-gradient(circle_at_1px_1px,#ffffff33_1px,transparent_0)] [background-size:18px_18px]" />
 
-                    {/* Верхняя часть */}
                     <div className="relative z-10 flex flex-col gap-3">
                       <div className="inline-flex items-center gap-2 text-[11px] text-neutral-300">
                         <span className="rounded-full border border-neutral-700/80 bg-black/70 px-2.5 py-0.5 backdrop-blur">
@@ -727,14 +800,12 @@ function formatPlanName(plan?: PlanKey) {
                       </p>
                     </div>
 
-                    {/* Описание */}
                     <div className="relative z-10 mt-3 sm:mt-6">
                       <p className="text-[13px] sm:text-[14px] text-neutral-300 leading-relaxed max-w-2xl">
                         {currentSlide.description}
                       </p>
                     </div>
 
-                    {/* Навигация по инсайтам */}
                     <div className="relative z-10 mt-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                       <div className="flex flex-col gap-1 text-[11px] text-neutral-400">
                         <span>
@@ -790,7 +861,7 @@ function formatPlanName(plan?: PlanKey) {
               </section>
             )}
 
-            {/* Сводка по менеджерам */}
+            {/* MANAGERS TOP-5 */}
             {topManagers.length > 0 && (
               <section className="mt-4 space-y-3">
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
@@ -806,7 +877,6 @@ function formatPlanName(plan?: PlanKey) {
                 </div>
 
                 <div className="overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950 shadow-[0_18px_40px_rgba(0,0,0,0.75)]">
-                  {/* Desktop — таблица */}
                   <div className="hidden md:block w-full">
                     <table className="min-w-full text-left text-sm">
                       <thead className="bg-neutral-950 text-[11px] uppercase text-neutral-500">
@@ -841,7 +911,6 @@ function formatPlanName(plan?: PlanKey) {
                     </table>
                   </div>
 
-                  {/* Mobile — карточки */}
                   <div className="md:hidden divide-y divide-neutral-800/80">
                     {topManagers.map((m) => (
                       <div
@@ -886,7 +955,7 @@ function formatPlanName(plan?: PlanKey) {
               </section>
             )}
 
-            {/* Разделы */}
+            {/* SECTIONS */}
             <section className="mt-4">
               <h2 className="mb-3 text-xs sm:text-sm font-semibold uppercase tracking-[0.16em] text-neutral-500">
                 Разделы
@@ -896,9 +965,7 @@ function formatPlanName(plan?: PlanKey) {
                   href="/app/calls"
                   className="group rounded-2xl border border-neutral-800 bg-neutral-950 p-4 shadow-[0_16px_35px_rgba(0,0,0,0.75)] transition hover:border-emerald-400/70 hover:bg-neutral-900 hover:shadow-[0_22px_60px_rgba(0,0,0,0.9)]"
                 >
-                  <div className="text-[11px] uppercase text-neutral-500">
-                    Calls
-                  </div>
+                  <div className="text-[11px] uppercase text-neutral-500">Calls</div>
                   <div className="mt-2 text-base sm:text-lg font-semibold text-neutral-50">
                     Журнал звонков
                   </div>
@@ -948,14 +1015,13 @@ function formatPlanName(plan?: PlanKey) {
               </div>
             </section>
 
-            {/* Последние звонки */}
+            {/* LATEST CALLS */}
             <section className="mt-6 space-y-3">
               <h2 className="text-xs sm:text-sm font-semibold uppercase tracking-[0.16em] text-neutral-500">
                 Последние звонки
               </h2>
 
               <div className="overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950 shadow-[0_18px_50px_rgba(0,0,0,0.8)]">
-                {/* Desktop — таблица */}
                 <div className="hidden md:block max-h-[340px] w-full overflow-auto">
                   <table className="min-w-full text-left text-sm">
                     <thead className="bg-neutral-950 text-[11px] uppercase text-neutral-500">
@@ -1018,7 +1084,6 @@ function formatPlanName(plan?: PlanKey) {
                   </table>
                 </div>
 
-                {/* Mobile — карточки */}
                 <div className="md:hidden max-h-[360px] w-full overflow-auto divide-y divide-neutral-800/80">
                   {latestCalls.length === 0 && (
                     <div className="px-4 py-6 text-center text-xs text-neutral-500">
@@ -1037,10 +1102,7 @@ function formatPlanName(plan?: PlanKey) {
                         : "bg-neutral-800/60 text-neutral-200 border-neutral-600/60";
 
                     return (
-                      <div
-                        key={c.id}
-                        className="px-4 py-3 flex flex-col gap-2"
-                      >
+                      <div key={c.id} className="px-4 py-3 flex flex-col gap-2">
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-[12px] text-neutral-300">
                             {formatted}

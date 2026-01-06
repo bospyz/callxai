@@ -1,50 +1,16 @@
 // src/lib/call-quota.ts
-
 import { db } from "@/lib/db";
 import { SubscriptionStatus } from "@prisma/client";
 
-/**
- * План тарифа (нормализованный ключ)
- */
 export type PlanKey = "free" | "start" | "pro" | "enterprise";
 
-/**
- * Расчёт квоты по звонкам (на период)
- */
 export type CallsQuota = {
   plan: PlanKey;
-
-  /**
-   * Лимит на период. null => безлимит
-   */
-  limit: number | null;
-
-  /**
-   * Использовано "боевых" звонков в периоде
-   */
-  used: number;
-
-  /**
-   * Осталось. null => безлимит
-   */
+  limit: number | null; // null => unlimited
+  used: number;         // counted snapshot (billable calls)
   remaining: number | null;
-
-  /**
-   * Минимальная длительность звонка, которую считаем "боевой" (сек).
-   */
   billableMinDurationSec: number;
-
-  /**
-   * Период, по которому считали
-   */
-  period: {
-    start: Date;
-    end: Date;
-  };
-
-  /**
-   * Причина/статус, чтобы UI мог объяснить ограничение
-   */
+  period: { start: Date; end: Date };
   reason:
     | "no-subscription"
     | "within-free-limit"
@@ -52,17 +18,6 @@ export type CallsQuota = {
     | "paid-plan-limited"
     | "paid-plan-unlimited";
 };
-
-/**
- * Бизнес-логика:
- * - если подписки нет: FREE (и лимит free)
- * - если подписка есть и ACTIVE:
- *    - enterprise: unlimited
- *    - иначе: лимит либо из sub.callsLimitPerMonth, либо fallback
- *
- * Важно:
- * Лимиты считаются по "боевым" звонкам >= billableMinDurationSec.
- */
 
 /* =========================
    Plan normalization
@@ -97,24 +52,16 @@ export function getLimitForPlan(plan: PlanKey): number | null {
   }
 }
 
-/**
- * Минимальная длительность "боевого" звонка.
- * Важно: используй это же правило на этапе ingest (чтобы нельзя было обойти квоту).
- */
-export function getBillableMinDurationSec(plan: PlanKey): number {
-  // Можно различать по тарифам. Сейчас фикс.
-  // Не оставляем unused param — это ломало lint у тебя.
-  void plan;
+export function getBillableMinDurationSec(_plan: PlanKey): number {
+  // единое правило для всех планов (можно усложнить позже)
   return 30;
 }
 
 /* =========================
-   Periods
+   Period (calendar month)
 ========================= */
 
 function getCurrentMonthBounds(now = new Date()) {
-  // Период = календарный месяц по серверному времени.
-  // Если хочешь “rolling 30 days” — делай другой расчёт и храни periodKey.
   const start = new Date(now.getFullYear(), now.getMonth(), 1);
   const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
   return { start, end };
@@ -126,51 +73,36 @@ function getCurrentMonthBounds(now = new Date()) {
 
 type SubscriptionLike = {
   plan: string | null;
+  // это поле может отсутствовать в твоей модели — поэтому читаем через any
   callsLimitPerMonth: number | null;
 };
 
-/**
- * Читает ACTIVE подписку.
- * Важно: выбираем только нужные поля, без any.
- * Если callsLimitPerMonth реально нет в твоей модели Subscription — убери это поле здесь и ниже.
- */
 async function getActiveSubscription(companyId: string): Promise<SubscriptionLike | null> {
   const sub = await db.subscription.findFirst({
     where: { companyId, status: SubscriptionStatus.ACTIVE },
     orderBy: { createdAt: "desc" },
-    select: {
-      plan: true,
-      callsLimitPerMonth: true,
-    },
+    select: { plan: true } as any,
   });
 
   if (!sub) return null;
 
-  // Prisma type может не знать поле callsLimitPerMonth, если его нет.
-  // Поэтому явно нормализуем.
   const plan = (sub as any).plan as string | null;
   const callsLimitPerMonth =
-    typeof (sub as any).callsLimitPerMonth === "number" ? ((sub as any).callsLimitPerMonth as number) : null;
+    typeof (sub as any).callsLimitPerMonth === "number"
+      ? ((sub as any).callsLimitPerMonth as number)
+      : null;
 
   return { plan, callsLimitPerMonth };
 }
 
 /* =========================
-   Counting calls (billable)
+   Counting billable calls
 ========================= */
 
-/**
- * Критично: считать надо по "дате факта звонка" (occurredAt/startedAt),
- * а не по createdAt (иначе sync задним числом ломает квоты).
- *
- * Если у тебя нет occurredAt — оставляем createdAt.
- * Рекомендация для продажи: добавить occurredAt и считать по нему.
- */
 function getCallPeriodFieldName(): "occurredAt" | "createdAt" {
-  // Нельзя проверить схему Prisma в runtime корректно.
-  // Поэтому держи как константу и переключай при добавлении поля.
-  // Если у тебя уже есть occurredAt — просто поменяй на "occurredAt".
-  return "createdAt";
+  // В твоей схеме ты используешь occurredAt в Call.create (в amocrm-sync).
+  // Значит, квоту корректнее считать по occurredAt.
+  return "occurredAt";
 }
 
 async function countBillableCallsInPeriod(params: {
@@ -185,7 +117,6 @@ async function countBillableCallsInPeriod(params: {
     companyId: params.companyId,
     duration: { gte: params.billableMinDurationSec },
   };
-
   where[periodField] = { gte: params.start, lt: params.end };
 
   return db.call.count({ where });
@@ -244,7 +175,7 @@ export async function getCallsQuota(companyId: string): Promise<CallsQuota> {
   const fallbackLimit = getLimitForPlan(plan);
   const limit = sub.callsLimitPerMonth ?? fallbackLimit;
 
-  // If limit unexpectedly null (shouldn't happen for non-enterprise) — treat as unlimited.
+  // safety: treat null as unlimited
   if (limit === null) {
     return {
       plan,
@@ -277,34 +208,27 @@ export async function getCallsQuota(companyId: string): Promise<CallsQuota> {
   };
 }
 
+/**
+ * Alias — оставлен для обратной совместимости
+ */
 export async function getRemainingCallsQuota(companyId: string): Promise<CallsQuota> {
-  // alias
   return getCallsQuota(companyId);
 }
 
 /**
- * Для импорта пачки: вернуть сколько можно “принять” сейчас.
- * Важно: это ОЦЕНКА.
- * Реальную защиту надо делать при записи каждого звонка (idempotent + atomic checks).
+ * Для импорта пачки (оценка): сколько можно принять сейчас.
+ * Реальный enforce делай в processCall (billable списывается по факту).
  */
-export async function getQuotaForImport(
-  companyId: string,
-  requested: number
-): Promise<{ allowed: number; quota: CallsQuota }> {
+export async function getQuotaForImport(companyId: string, requested: number): Promise<{
+  allowed: number;
+  quota: CallsQuota;
+}> {
   const quota = await getCallsQuota(companyId);
-
   if (quota.limit === null) return { allowed: requested, quota };
-
   const remaining = quota.remaining ?? 0;
-  const allowed = Math.max(Math.min(requested, remaining), 0);
-
-  return { allowed, quota: { ...quota, remaining } };
+  return { allowed: Math.max(Math.min(requested, remaining), 0), quota };
 }
 
-/**
- * Проверка "можно ли принять ещё один billable call".
- * Важно: это не атомарно. Для железобетона — enforce на уровне DB (см. ниже).
- */
 export async function canCompanyIngestCall(companyId: string): Promise<{
   allowed: boolean;
   limit: number | null;
@@ -324,8 +248,7 @@ export async function canCompanyIngestCall(companyId: string): Promise<{
     return { allowed: false, limit: quota.limit, remaining: 0, plan: quota.plan, reason: "limit-reached" };
   }
 
-  // differentiate "no-subscription" for UI
-  if (quota.reason === "within-free-limit" || quota.reason === "free-limit-exceeded") {
+  if (quota.plan === "free") {
     return { allowed: true, limit: quota.limit, remaining, plan: quota.plan, reason: "no-subscription" };
   }
 
@@ -333,16 +256,42 @@ export async function canCompanyIngestCall(companyId: string): Promise<{
 }
 
 /* =========================
-   Hardening notes (important)
+   The missing function: incrementCallsQuota
 ========================= */
 
 /**
- * ВАЖНО для предотвращения обхода квоты:
- * 1) В ingest pipeline, перед тем как помечать звонок как billable,
- *    используй ТО ЖЕ правило billableMinDurationSec.
- * 2) Сделай идемпотентность по (companyId, externalCallId, source)
- * 3) Для атомарного enforce лимита:
- *    - заведи UsageCounter таблицу (companyId, periodKey, usedBillableCalls)
- *    - инкремент через транзакцию и проверку <= limit
- *    Иначе при параллельном sync можно превысить лимит гонкой.
+ * ВАЖНО:
+ * В текущей архитектуре quota.used считается через db.call.count (snapshot),
+ * поэтому атомарного "increment" без отдельной Usage-таблицы нет.
+ *
+ * Но чтобы:
+ * - не ломать build,
+ * - сохранить контракт,
+ * - дать возможность вызывать это в processCall,
+ *
+ * мы делаем best-effort:
+ * 1) проверяем квоту snapshot,
+ * 2) если лимит исчерпан — кидаем ошибку,
+ * 3) иначе просто возвращаем новый snapshot.
+ *
+ * Если хочешь железобетон — добавим таблицу UsageCounter и сделаем транзакционный инкремент.
  */
+export async function incrementCallsQuota(companyId: string, n = 1): Promise<CallsQuota> {
+  const quota = await getCallsQuota(companyId);
+
+  if (n <= 0) return quota;
+
+  // unlimited
+  if (quota.limit === null) return quota;
+
+  const remaining = quota.remaining ?? 0;
+
+  if (remaining - n < 0) {
+    // здесь можно кинуть HttpError(402) если у тебя есть http-error
+    throw new Error("Calls quota exceeded");
+  }
+
+  // Ничего не пишем в БД: used считается как snapshot.
+  // Возвращаем актуальную квоту (для UI/логики достаточно).
+  return await getCallsQuota(companyId);
+}

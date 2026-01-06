@@ -1,0 +1,270 @@
+﻿diff --git a/src/lib/amocrm.ts b/src/lib/amocrm.ts
+--- a/src/lib/amocrm.ts
++++ b/src/lib/amocrm.ts
+@@ -1,310 +1,531 @@
+ ﻿// src/lib/amocrm.ts
+ import { db } from "@/lib/db";
+ import { IntegrationType } from "@prisma/client";
+@@
+ export async function amoListCallNotes(params: {
+   companyId: string;
+   from: Date;
+   to: Date;
+   page: number;
+   limit: number;
+ }) {
+   // amo uses unix seconds for filters
+   const fromTs = Math.floor(params.from.getTime() / 1000);
+   const toTs = Math.floor(params.to.getTime() / 1000);
+@@
+   return await amoRequest<any>({
+     companyId: params.companyId,
+     method: "GET",
+     path: "/api/v4/leads/notes",
+     query: {
+       limit: params.limit,
+       page: params.page,
+       "filter[updated_at][from]": fromTs,
+       "filter[updated_at][to]": toTs,
+     },
+     
+   });
+ }
+-console.log("[AMO notes] keys", Object.keys(res?._embedded ?? {}));
+-console.log("[AMO notes] embedded.items?", Array.isArray(res?._embedded?.items), "len", res?._embedded?.items?.length);
+-console.log("[AMO notes] embedded.calls?", Array.isArray(res?._embedded?.calls), "len", res?._embedded?.calls?.length);
++
++/**
++ * List call events (amoCRM Events) within time window.
++ * Many KZ accounts store call records in /api/v4/events with event_type=30, while /api/v4/calls may return 405.
++ */
++export async function amoListCallEvents(params: {
++  companyId: string;
++  from: Date;
++  to: Date;
++  page: number;
++  limit: number;
++}): Promise<{ raw: any; items: any[] }> {
++  const fromTs = Math.floor(params.from.getTime() / 1000);
++  const toTs = Math.floor(params.to.getTime() / 1000);
++
++  const raw = await amoRequest<any>({
++    companyId: params.companyId,
++    method: "GET",
++    path: "/api/v4/events",
++    query: {
++      page: params.page,
++      limit: params.limit,
++      "filter[created_at][from]": fromTs,
++      "filter[created_at][to]": toTs,
++      // UI uses filter[event_type][0]=30 for outgoing call events
++      "filter[event_type][0]": 30,
++    },
++  });
++
++  const embedded = raw?._embedded ?? {};
++  const items: any[] = embedded?.items ?? embedded?.events ?? raw?.items ?? raw?.events ?? [];
++  return { raw, items: Array.isArray(items) ? items : [] };
++}
++
++/* ============================================================
++   normalizeAmoEventCall — converts events endpoint items into unified dto
++   Compatible with syncAmoRecentCalls in src/lib/amocrm-sync.ts
++============================================================ */
++
++function deepFindValue(
++  obj: any,
++  predicate: (key: string, value: any) => boolean,
++  maxDepth = 5,
++  _depth = 0
++): any | undefined {
++  if (!obj || typeof obj !== "object") return undefined;
++  if (_depth > maxDepth) return undefined;
++
++  if (Array.isArray(obj)) {
++    for (const v of obj) {
++      const r = deepFindValue(v, predicate, maxDepth, _depth + 1);
++      if (r !== undefined) return r;
++    }
++    return undefined;
++  }
++
++  for (const [k, v] of Object.entries(obj)) {
++    try {
++      if (predicate(k, v)) return v;
++      const r = deepFindValue(v, predicate, maxDepth, _depth + 1);
++      if (r !== undefined) return r;
++    } catch {
++      // ignore traversal errors
++    }
++  }
++  return undefined;
++}
++
++function pickFirstString(raw: any, keys: string[]): string | null {
++  for (const k of keys) {
++    const v = raw?.[k];
++    if (typeof v === "string" && v.trim()) return v.trim();
++  }
++  return null;
++}
++
++function safeUnixToDate(v: any): Date | null {
++  const n = typeof v === "number" ? v : Number(v);
++  if (!Number.isFinite(n)) return null;
++  // amo events are typically unix seconds; handle ms too
++  const ms = n > 10_000_000_000 ? n : n * 1000;
++  const d = new Date(ms);
++  return Number.isFinite(d.getTime()) ? d : null;
++}
++
++export type NormalizedAmoEventCallDto = {
++  externalId: string;
++  occurredAt: Date | null;
++
++  durationSec?: number | null;
++  direction?: "inbound" | "outbound" | "unknown" | null;
++
++  phone?: string | null;
++  linePhone?: string | null;
++  audioUrl?: string | null;
++
++  amoUserId?: number | null;
++
++  leadId?: string | number | null;
++  leadName?: string | null;
++  leadUrl?: string | null;
++
++  raw: any;
++};
++
++export function normalizeAmoEventCall(event: any): NormalizedAmoEventCallDto | null {
++  if (!event || typeof event !== "object") return null;
++
++  const externalId =
++    typeof event?.id === "number" || typeof event?.id === "string"
++      ? String(event.id)
++      : typeof event?.uuid === "string"
++        ? event.uuid
++        : "";
++
++  if (!externalId) return null;
++
++  const occurredAt =
++    safeUnixToDate(event?.created_at) ||
++    safeUnixToDate(event?.occurred_at) ||
++    safeUnixToDate(event?.updated_at) ||
++    null;
++
++  const eventType = Number(event?.event_type ?? event?.type ?? NaN);
++  const direction: "outbound" | "unknown" | null =
++    Number.isFinite(eventType) && eventType === 30 ? "outbound" : "unknown";
++
++  const data = event?.value_after ?? event?.value_before ?? event?.data ?? event?.params ?? event?.entity_data ?? {};
++
++  const audioUrl =
++    pickFirstString(data, ["record_url", "recordUrl", "record", "recording_url", "audio_url", "url", "link"]) ||
++    pickFirstString(event, ["record_url", "recordUrl", "record", "recording_url", "audio_url", "url", "link"]) ||
++    ((deepFindValue(event, (k, v) => {
++      const kk = String(k).toLowerCase();
++      return (
++        ["record_url", "recordurl", "recording_url", "recordingurl", "audio_url", "audiourl", "record", "link", "url"].includes(kk) &&
++        typeof v === "string" &&
++        v.trim()
++      );
++    }) as string | undefined)?.trim?.() ?? null);
++
++  const durationRaw =
++    data?.duration ?? data?.duration_sec ?? data?.call_duration ?? data?.call_duration_sec ??
++    (deepFindValue(event, (k, v) => {
++      const kk = String(k).toLowerCase();
++      return (
++        ["duration", "duration_sec", "call_duration", "call_duration_sec"].includes(kk) &&
++        (typeof v === "number" || (typeof v === "string" && v.trim()))
++      );
++    }) as any);
++
++  const durationNum =
++    typeof durationRaw === "number" ? durationRaw :
++    typeof durationRaw === "string" ? Number(durationRaw) :
++    null;
++
++  const phone =
++    pickFirstString(data, ["phone", "caller", "callee", "client_phone", "from", "to", "number"]) ||
++    pickFirstString(event, ["phone"]) ||
++    ((deepFindValue(event, (k, v) => {
++      const kk = String(k).toLowerCase();
++      return (
++        ["phone", "caller", "callee", "client_phone", "from", "to", "number"].includes(kk) &&
++        typeof v === "string" &&
++        v.trim()
++      );
++    }) as string | undefined)?.trim?.() ?? null);
++
++  const linePhone =
++    pickFirstString(data, ["line_phone", "linePhone", "sip", "pbx_number", "pbxnumber"]) ||
++    ((deepFindValue(event, (k, v) => {
++      const kk = String(k).toLowerCase();
++      return (
++        ["line_phone", "linephone", "sip", "pbx_number", "pbxnumber"].includes(kk) &&
++        typeof v === "string" &&
++        v.trim()
++      );
++    }) as string | undefined)?.trim?.() ?? null);
++
++  const amoUserIdRaw =
++    event?.created_by ??
++    event?.created_by_id ??
++    event?.created_by_user_id ??
++    data?.created_by ??
++    data?.created_by_id ??
++    data?.user_id ??
++    data?.responsible_user_id ??
++    (deepFindValue(event, (k, v) => {
++      const kk = String(k).toLowerCase();
++      return (
++        ["created_by", "created_by_id", "user_id", "manager_id", "responsible_user_id"].includes(kk) &&
++        (typeof v === "number" || (typeof v === "string" && v.trim()))
++      );
++    }) as any);
++
++  const amoUserId =
++    typeof amoUserIdRaw === "number" ? amoUserIdRaw :
++    typeof amoUserIdRaw === "string" && amoUserIdRaw.trim() ? Number(amoUserIdRaw) :
++    null;
++
++  const leadId =
++    event?.entity_id ??
++    data?.lead_id ??
++    data?.entity_id ??
++    (deepFindValue(event, (k, v) => {
++      const kk = String(k).toLowerCase();
++      return ["lead_id", "entity_id", "leadid"].includes(kk) && (typeof v === "number" || typeof v === "string");
++    }) as any) ??
++    null;
++
++  return {
++    externalId,
++    occurredAt,
++    durationSec: Number.isFinite(durationNum as any) ? Number(durationNum) : null,
++    direction,
++    phone,
++    linePhone,
++    audioUrl,
++    amoUserId: Number.isFinite(amoUserId as any) ? amoUserId : null,
++    leadId,
++    leadName: null,
++    leadUrl: null,
++    raw: event,
++  };
++}
+ 
+ /* ============================================================
+    normalizeAmoCall — converts calls endpoint items OR notes into unified dto
+    This is the missing dependency for amocrm-sync.ts
+============================================================ */
+ 
+ function toNumber(v: any): number | null {
+   const n = typeof v === "number" ? v : Number(v);
+   return Number.isFinite(n) ? n : null;
+ }

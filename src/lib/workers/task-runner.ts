@@ -1,4 +1,5 @@
-﻿import { db } from "@/lib/db";
+﻿// src/lib/workers/task-runner.ts
+import { db } from "@/lib/db";
 import { CallStatus, CallTaskStatus } from "@prisma/client";
 
 const STUCK_MINUTES = 15;
@@ -12,6 +13,10 @@ function backoffSeconds(attempt: number): number {
   return 3600;
 }
 
+/**
+ * Сбрасывает зависшие PROCESSING задачи обратно в NEW.
+ * Возвращает количество сброшенных задач.
+ */
 export async function resetStuckTasks(now = new Date()): Promise<number> {
   const stuckBefore = new Date(now.getTime() - STUCK_MINUTES * 60 * 1000);
 
@@ -31,7 +36,14 @@ export async function resetStuckTasks(now = new Date()): Promise<number> {
   return res.count;
 }
 
-export async function listDueTasks(limit: number, now = new Date()) {
+/**
+ * Возвращает задачи, которые готовы к выполнению (NEW + nextRunAt <= now).
+ * Используется cron-роутом.
+ */
+export async function listDueTasks(
+  limit: number,
+  now = new Date()
+): Promise<Array<{ id: string; callId: string; attempts: number }>> {
   return db.callTask.findMany({
     where: {
       status: CallTaskStatus.NEW,
@@ -44,7 +56,13 @@ export async function listDueTasks(limit: number, now = new Date()) {
   });
 }
 
-export async function claimTask(taskId: string, now = new Date()): Promise<boolean> {
+/**
+ * Атомарно "захватывает" задачу: NEW -> PROCESSING и attempts++
+ */
+export async function claimTask(
+  taskId: string,
+  now = new Date()
+): Promise<boolean> {
   const res = await db.callTask.updateMany({
     where: {
       id: taskId,
@@ -63,6 +81,9 @@ export async function claimTask(taskId: string, now = new Date()): Promise<boole
   return res.count === 1;
 }
 
+/**
+ * Помечает задачу как DONE.
+ */
 export async function markTaskDone(taskId: string): Promise<void> {
   await db.callTask.update({
     where: { id: taskId },
@@ -75,7 +96,18 @@ export async function markTaskDone(taskId: string): Promise<void> {
   });
 }
 
-export async function markTaskError(taskId: string, attemptAfterIncrement: number, message: string, now = new Date()): Promise<void> {
+/**
+ * Помечает ошибку: если попытки исчерпаны -> ERROR,
+ * иначе возвращает задачу в NEW с backoff.
+ *
+ * attemptAfterIncrement должен быть attempts после claimTask (то есть t.attempts + 1).
+ */
+export async function markTaskError(
+  taskId: string,
+  attemptAfterIncrement: number,
+  message: string,
+  now = new Date()
+): Promise<void> {
   const normalized = (message || "Unknown error").slice(0, 2000);
 
   if (attemptAfterIncrement >= MAX_ATTEMPTS) {
@@ -104,6 +136,9 @@ export async function markTaskError(taskId: string, attemptAfterIncrement: numbe
   });
 }
 
+/**
+ * (Опционально) если где-то ещё используется
+ */
 export async function markCallProcessing(callId: string): Promise<void> {
   await db.call.update({
     where: { id: callId },

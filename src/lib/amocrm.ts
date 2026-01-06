@@ -1,830 +1,507 @@
 ﻿// src/lib/amocrm.ts
 import { db } from "@/lib/db";
-import crypto from "crypto";
 import { IntegrationType } from "@prisma/client";
 
-/* ============================================================
-   TYPES
-============================================================ */
+type AmoConfigRaw = any;
 
-export type AmoTokens = {
+export type AmoIntegrationConfig = {
+  domain: string; // "xxx.amocrm.ru" OR "xxx.amocrm.com"
+  apiDomain?: string | null; // optional override
   accessToken: string;
-  refreshToken: string;
-  expiresAtMs: number; // unix ms
+  refreshToken?: string | null;
+  tokenExpiresAt?: string | null; // ISO string
 };
 
-export type EncryptedTokens = {
-  enc: true;
-  v: 1;
-  blob: string; // iv.cipher.tag (base64 parts)
-  expiresAtMs: number;
-};
-
-export type AmoConfig = {
-  domain: string; // example.amocrm.ru
-  accountId?: string;
-  tokens?: AmoTokens | EncryptedTokens;
-  webhookSecret?: string;
-  meta?: Record<string, any>;
-};
-
-export type AmoCallDTO = {
-  externalId: string;
-
-  occurredAt?: Date;
-  durationSec?: number;
-
-  direction?: "inbound" | "outbound" | "unknown";
-
-  phone?: string; // clientPhone
-  linePhone?: string; // linePhone
-
-  believesAudioUrl?: string; // (optional debug field)
-  audioUrl?: string; // recording url from amo (external)
-
-  leadId?: string;
-  leadName?: string;
-  leadUrl?: string;
-
-  pipelineId?: string;
-  pipelineName?: string;
-
-  stageId?: string;
-  stageName?: string;
-
-  amountKzt?: number;
-
-  raw?: any; // MUST keep for debugging
-};
-
-type AmoHttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-
-type AmoError = {
-  status: number;
-  message: string;
-  details?: any;
-};
-
-type AmoRequestOpts = {
+export type AmoRequestParams<T> = {
   companyId: string;
-  method: AmoHttpMethod;
-  path: string; // "/api/v4/..."
-  query?: Record<string, string | number | boolean | undefined>;
+  method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+  path: string; // "/api/v4/account"
+  query?: Record<string, any>;
   body?: any;
-  timeoutMs?: number;
-  retryMax?: number;
-  disableAutoRefresh?: boolean;
+  headers?: Record<string, string>;
+  raw?: boolean;
 };
 
-type AmoOAuthTokenResponse = {
-  access_token: string;
-  refresh_token: string;
-  expires_in: number;
-  token_type?: string;
-  scope?: string;
-};
-
-/* ============================================================
-   ENV / CONSTANTS
-============================================================ */
-
-const OAUTH_BASE = process.env.AMO_OAUTH_BASE || "https://www.amocrm.ru/oauth2";
-
-const TIMEOUT_MS = (() => {
-  const v = Number(process.env.AMO_TIMEOUT_MS);
-  return Number.isFinite(v) && v > 0 ? v : 20_000;
-})();
-
-const RETRY_MAX = (() => {
-  const v = Number(process.env.AMO_RETRY_MAX);
-  return Number.isFinite(v) && v >= 0 ? v : 3;
-})();
-
-const TOKEN_EXPIRY_SKEW_MS = 60_000; // refresh 60s before expiry
-
-/* ============================================================
-   SMALL UTILS
-============================================================ */
-
-function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
-}
-
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function computeBackoffMs(attempt: number) {
-  const base = 400 * Math.pow(2, attempt);
-  const jitter = Math.floor(Math.random() * 250);
-  return Math.min(8000, base + jitter);
-}
-
-async function fetchTimeout(url: string, init: RequestInit, timeoutMs: number) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: ctrl.signal });
-  } finally {
-    clearTimeout(t);
+function buildQuery(q?: Record<string, any>) {
+  if (!q) return "";
+  const usp = new URLSearchParams();
+  for (const [k, v] of Object.entries(q)) {
+    if (v === undefined || v === null || v === "") continue;
+    usp.set(k, String(v));
   }
+  const s = usp.toString();
+  return s ? `?${s}` : "";
 }
 
-function asAmoError(e: any): AmoError {
-  if (e && typeof e.status === "number" && typeof e.message === "string") return e as AmoError;
-  const msg = e instanceof Error ? e.message : String(e ?? "Unknown error");
-  return { status: 0, message: msg, details: e };
+function pickString(v: any): string | null {
+  return typeof v === "string" && v.trim() ? v.trim() : null;
 }
 
-async function parseJsonOrThrow(res: Response) {
-  let json: any = null;
-  try {
-    json = await res.json();
-  } catch {
-    json = null;
+function normalizeDomain(input: string): string {
+  const s = input.trim();
+  if (s.startsWith("http://") || s.startsWith("https://")) {
+    const u = new URL(s);
+    return u.host;
   }
+  return s.replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
+export async function getAmoIntegrationConfig(companyId: string): Promise<AmoIntegrationConfig> {
+  const integration = await db.integration.findFirst({
+    where: { companyId, type: IntegrationType.AMOCRM, enabled: true },
+    select: { id: true, config: true },
+  });
+
+  if (!integration) throw new Error("amo_integration_not_found");
+
+  const cfg: AmoConfigRaw = integration.config ?? {};
+
+  const domainRaw = pickString(cfg?.domain);
+  if (!domainRaw) throw new Error("amo_integration_domain_missing");
+
+  const domain = normalizeDomain(domainRaw);
+
+  const accessToken = pickString(cfg?.accessToken) || pickString(cfg?.tokens?.accessToken);
+  if (!accessToken) throw new Error("amo_integration_accessToken_missing");
+
+  const refreshToken = pickString(cfg?.refreshToken) || pickString(cfg?.tokens?.refreshToken);
+
+  const tokenExpiresAt =
+    pickString(cfg?.tokenExpiresAt) ||
+    (typeof cfg?.tokens?.expiresAtMs === "number"
+      ? new Date(cfg.tokens.expiresAtMs).toISOString()
+      : null);
+
+  const apiDomain = pickString(cfg?.apiDomain);
+
+  return {
+    domain,
+    apiDomain: apiDomain ?? null,
+    accessToken,
+    refreshToken,
+    tokenExpiresAt,
+  };
+}
+
+/**
+ * Used by call-analysis.ts
+ * Returns accessToken for best-effort Bearer download
+ */
+export async function amoGetAccessTokenForCompany(companyId: string): Promise<{ accessToken: string }> {
+  const cfg = await getAmoIntegrationConfig(companyId);
+  return { accessToken: cfg.accessToken };
+}
+
+/**
+ * Core fetch wrapper
+ * IMPORTANT: If amo returns non-2xx — we throw Error with (error as any).status
+ * so sync auto-fallback can detect 405 and switch mode.
+ */
+export async function amoRequest<T = any>(params: AmoRequestParams<T>): Promise<T> {
+  const cfg = await getAmoIntegrationConfig(params.companyId);
+
+  const apiDomain = cfg.apiDomain || cfg.domain;
+  const url = `https://${apiDomain}${params.path}${buildQuery(params.query)}`;
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${cfg.accessToken}`,
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    ...(params.headers || {}),
+  };
+
+  const res = await fetch(url, {
+    method: params.method,
+    headers,
+    body: params.body !== undefined ? JSON.stringify(params.body) : undefined,
+  });
 
   if (!res.ok) {
-    const err: AmoError = {
-      status: res.status,
-      message: json?.detail || json?.error || json?.message || `amoCRM request failed (${res.status})`,
-      details: json,
-    };
+    const text = await res.text().catch(() => "");
+    const err = new Error(`amoRequest failed ${res.status}: ${text.slice(0, 2000)}`);
+    (err as any).status = res.status;
+    (err as any).details = { status: res.status, url };
     throw err;
   }
 
-  return json;
-}
+  if (params.raw) return (res as any) as T;
 
-function buildQuery(query?: Record<string, string | number | boolean | undefined>): string {
-  if (!query) return "";
-  const pairs = Object.entries(query).filter(([, v]) => v !== undefined);
-  if (!pairs.length) return "";
-  const sp = new URLSearchParams();
-  for (const [k, v] of pairs) sp.set(k, String(v));
-  const qs = sp.toString();
-  return qs ? `?${qs}` : "";
-}
-
-/* ============================================================
-   DOMAIN VALIDATION
-============================================================ */
-
-export function validateAmoDomain(domain: string): string {
-  const d = domain.trim().toLowerCase();
-  // allow common amo zones; extend if needed
-  if (!/^[a-z0-9-]+\.amocrm\.(ru|com|kz|ua|by)$/i.test(d)) {
-    throw new Error("Invalid amoCRM domain format");
+  const ct = (res.headers.get("content-type") || "").toLowerCase();
+  if (!ct.includes("application/json")) {
+    return null as any;
   }
-  return d;
+
+  return (await res.json()) as T;
 }
 
-/* ============================================================
-   TOKEN ENCRYPTION (OPTIONAL)
-============================================================ */
+/**
+ * List call notes within time window.
+ * Used by src/lib/amocrm-sync.ts
+ */
+export async function amoListCallNotes(params: {
+  companyId: string;
+  from: Date;
+  to: Date;
+  page: number;
+  limit: number;
+}) {
+  const fromTs = Math.floor(params.from.getTime() / 1000);
+  const toTs = Math.floor(params.to.getTime() / 1000);
 
-function getEncKey(): Buffer | null {
-  const raw = process.env.AMO_TOKEN_ENC_KEY;
-  if (!raw) return null;
-
-  if (/^[0-9a-fA-F]{64}$/.test(raw)) return Buffer.from(raw, "hex");
-
-  const buf = Buffer.from(raw, "base64");
-  if (buf.length === 32) return buf;
-
-  throw new Error("AMO_TOKEN_ENC_KEY invalid: expected 32 bytes base64 or 64 hex chars");
-}
-
-function encryptJson(obj: any): { blob: string } {
-  const key = getEncKey();
-  if (!key) throw new Error("Encryption key not configured");
-
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-
-  const plaintext = Buffer.from(JSON.stringify(obj), "utf8");
-  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  const tag = cipher.getAuthTag();
-
-  return {
-    blob: `${iv.toString("base64")}.${ciphertext.toString("base64")}.${tag.toString("base64")}`,
-  };
-}
-
-function decryptJson(blob: string): any {
-  const key = getEncKey();
-  if (!key) throw new Error("Encryption key not configured");
-
-  const parts = blob.split(".");
-  if (parts.length !== 3) throw new Error("Bad encrypted blob format");
-
-  const iv = Buffer.from(parts[0], "base64");
-  const ciphertext = Buffer.from(parts[1], "base64");
-  const tag = Buffer.from(parts[2], "base64");
-
-  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
-  decipher.setAuthTag(tag);
-
-  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-  return JSON.parse(plaintext.toString("utf8"));
-}
-
-function maybeEncryptTokens(tokens: AmoTokens): AmoTokens | EncryptedTokens {
-  const key = getEncKey();
-  if (!key) return tokens;
-
-  const enc = encryptJson(tokens);
-  return { enc: true, v: 1, blob: enc.blob, expiresAtMs: tokens.expiresAtMs };
-}
-
-function maybeDecryptTokens(tokens: AmoTokens | EncryptedTokens): AmoTokens {
-  if ((tokens as EncryptedTokens)?.enc) {
-    return decryptJson((tokens as EncryptedTokens).blob) as AmoTokens;
-  }
-  return tokens as AmoTokens;
-}
-
-/* ============================================================
-   DB CONFIG
-============================================================ */
-
-async function getAmoIntegrationByCompany(companyId: string) {
-  return db.integration.findFirst({
-    where: { companyId, type: IntegrationType.AMOCRM },
-    select: { id: true, enabled: true, config: true, companyId: true, updatedAt: true, createdAt: true },
+  return await amoRequest<any>({
+    companyId: params.companyId,
+    method: "GET",
+    path: "/api/v4/leads/notes",
+    query: {
+      limit: params.limit,
+      page: params.page,
+      "filter[updated_at][from]": fromTs,
+      "filter[updated_at][to]": toTs,
+    },
   });
 }
 
-function readAmoConfig(raw: any): AmoConfig {
-  if (!raw || typeof raw !== "object") throw new Error("amoCRM config missing or invalid");
-  if (typeof raw.domain !== "string" || !raw.domain) throw new Error("amoCRM config.domain missing");
-  return raw as AmoConfig;
-}
 
-async function writeAmoConfig(integrationId: string, cfg: AmoConfig) {
-  await db.integration.update({ where: { id: integrationId }, data: { config: cfg } });
-}
-
-export async function requireAmoIntegrationEnabled(companyId: string) {
-  const integration = await getAmoIntegrationByCompany(companyId);
-  if (!integration) throw new Error("amoCRM integration not found");
-  if (!integration.enabled) throw new Error("amoCRM integration is disabled");
-  const cfg = readAmoConfig(integration.config);
-  return { integration, cfg };
-}
-
-/* ============================================================
-   OAUTH
-============================================================ */
-
-export function buildAmoAuthorizeUrl(params: { domain: string; state: string }): string {
-  const domain = validateAmoDomain(params.domain);
-  const clientId = requireEnv("AMO_CLIENT_ID");
-  const redirectUri = requireEnv("AMO_REDIRECT_URI");
-
-  const url = new URL(`https://${domain}/oauth`);
-  url.searchParams.set("client_id", clientId);
-  url.searchParams.set("state", params.state);
-  url.searchParams.set("redirect_uri", redirectUri);
-  // url.searchParams.set("mode", "post_message"); // optional
-  return url.toString();
-}
-
-export async function exchangeAmoCodeForTokens(params: {
+ export async function amoListCallNotes(params: {
   companyId: string;
-  domain: string;
-  code: string;
-}): Promise<{ integrationId: string; config: AmoConfig }> {
-  const domain = validateAmoDomain(params.domain);
+  from: Date;
+  to: Date;
+  page: number;
+  limit: number;
+}) {
+  const fromTs = Math.floor(params.from.getTime() / 1000);
+  const toTs = Math.floor(params.to.getTime() / 1000);
 
-  const clientId = requireEnv("AMO_CLIENT_ID");
-  const clientSecret = requireEnv("AMO_CLIENT_SECRET");
-  const redirectUri = requireEnv("AMO_REDIRECT_URI");
-
-  const existing = await getAmoIntegrationByCompany(params.companyId);
-
-  const integration =
-    existing ??
-    (await db.integration.create({
-      data: {
-        companyId: params.companyId,
-        type: IntegrationType.AMOCRM,
-        enabled: true,
-        config: { domain },
-      },
-      select: { id: true, enabled: true, config: true },
-    }));
-
-  const res = await fetchTimeout(
-    `${OAUTH_BASE}/access_token`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        client_id: clientId,
-        client_secret: clientSecret,
-        grant_type: "authorization_code",
-        code: params.code,
-        redirect_uri: redirectUri,
-      }),
+  const res = await amoRequest<any>({
+    companyId: params.companyId,
+    method: "GET",
+    path: "/api/v4/leads/notes",
+    query: {
+      limit: params.limit,
+      page: params.page,
+      "filter[updated_at][from]": fromTs,
+      "filter[updated_at][to]": toTs,
     },
-    TIMEOUT_MS
+  });
+
+  // Логи — только тут, где res реально существует
+  console.log("[AMO notes raw keys]", Object.keys(res || {}));
+  console.log("[AMO notes embedded keys]", Object.keys(res?._embedded || {}));
+  console.log(
+    "[AMO notes sample]",
+    JSON.stringify(res?._embedded || res, null, 2).slice(0, 2000)
   );
 
-  const data = (await parseJsonOrThrow(res)) as AmoOAuthTokenResponse;
-
-  const tokens: AmoTokens = {
-    accessToken: data.access_token,
-    refreshToken: data.refresh_token,
-    expiresAtMs: Date.now() + data.expires_in * 1000,
-  };
-
-  const cfg: AmoConfig = {
-    domain,
-    tokens: maybeEncryptTokens(tokens),
-    meta: { connectedAt: new Date().toISOString() },
-  };
-
-  await writeAmoConfig(integration.id, cfg);
-
-  if (existing && !existing.enabled) {
-    await db.integration.update({ where: { id: integration.id }, data: { enabled: true } });
-  }
-
-  return { integrationId: integration.id, config: cfg };
+  return res;
 }
+
 
 /* ============================================================
-   TOKENS: GET / REFRESH
+   normalizeAmoCall — converts calls endpoint items OR notes into unified dto
 ============================================================ */
 
-function tokenExpired(tokens: AmoTokens): boolean {
-  return tokens.expiresAtMs - TOKEN_EXPIRY_SKEW_MS <= Date.now();
+function toNumber(v: any): number | null {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
-export async function refreshAmoTokens(companyId: string): Promise<AmoTokens> {
-  const integration = await getAmoIntegrationByCompany(companyId);
-  if (!integration) throw new Error("amoCRM integration not found");
-
-  const cfg = readAmoConfig(integration.config);
-  if (!cfg.tokens) throw new Error("amoCRM tokens missing");
-
-  const clientId = requireEnv("AMO_CLIENT_ID");
-  const clientSecret = requireEnv("AMO_CLIENT_SECRET");
-  const redirectUri = requireEnv("AMO_REDIRECT_URI");
-
-  const current = maybeDecryptTokens(cfg.tokens);
-
-  const res = await fetchTimeout(
-    `${OAUTH_BASE}/access_token`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        client_id: clientId,
-        client_secret: clientSecret,
-        grant_type: "refresh_token",
-        refresh_token: current.refreshToken,
-        redirect_uri: redirectUri,
-      }),
-    },
-    TIMEOUT_MS
-  );
-
-  const data = (await parseJsonOrThrow(res)) as AmoOAuthTokenResponse;
-
-  const next: AmoTokens = {
-    accessToken: data.access_token,
-    refreshToken: data.refresh_token,
-    expiresAtMs: Date.now() + data.expires_in * 1000,
-  };
-
-  const nextCfg: AmoConfig = {
-    ...cfg,
-    tokens: maybeEncryptTokens(next),
-    meta: { ...(cfg.meta || {}), refreshedAt: new Date().toISOString() },
-  };
-
-  await writeAmoConfig(integration.id, nextCfg);
-  return next;
+function toDateFromUnixSeconds(v: any): Date | null {
+  const n = toNumber(v);
+  if (n == null) return null;
+  const ms = n > 10_000_000_000 ? n : n * 1000;
+  const d = new Date(ms);
+  return Number.isFinite(d.getTime()) ? d : null;
 }
 
-export async function amoGetAccessTokenForCompany(companyId: string): Promise<{
-  integrationId: string;
-  domain: string;
-  accessToken: string;
-}> {
-  const integration = await getAmoIntegrationByCompany(companyId);
-  if (!integration) throw new Error("amoCRM integration not found");
-
-  const cfg = readAmoConfig(integration.config);
-  if (!cfg.tokens) throw new Error("amoCRM tokens missing");
-
-  const tokens = maybeDecryptTokens(cfg.tokens);
-
-  if (!tokenExpired(tokens)) {
-    return { integrationId: integration.id, domain: cfg.domain, accessToken: tokens.accessToken };
-  }
-
-  const refreshed = await refreshAmoTokens(companyId);
-  return { integrationId: integration.id, domain: cfg.domain, accessToken: refreshed.accessToken };
-}
-
-/* ============================================================
-   REQUEST: retry/backoff + 401 refresh + 429 wait
-============================================================ */
-
-export async function amoRequest<T = any>(opts: AmoRequestOpts): Promise<T> {
-  const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS;
-  const retryMax = opts.retryMax ?? RETRY_MAX;
-
-  let lastErr: AmoError | null = null;
-  let refreshedOnce = false;
-
-  for (let attempt = 0; attempt <= retryMax; attempt++) {
-    try {
-      const { domain, accessToken } = await amoGetAccessTokenForCompany(opts.companyId);
-
-      const url = `https://${domain}${opts.path}${buildQuery(opts.query)}`;
-      const res = await fetchTimeout(
-        url,
-        {
-          method: opts.method,
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: opts.body ? JSON.stringify(opts.body) : undefined,
-        },
-        timeoutMs
-      );
-
-      if (res.status === 401 && !opts.disableAutoRefresh && !refreshedOnce) {
-        refreshedOnce = true;
-        await refreshAmoTokens(opts.companyId);
-        continue;
-      }
-
-      if (res.status === 429) {
-        const ra = res.headers.get("retry-after");
-        const waitMs = ra ? Math.max(0, Number(ra) * 1000) : computeBackoffMs(attempt);
-        await sleep(waitMs);
-        continue;
-      }
-
-      const json = await parseJsonOrThrow(res);
-      return json as T;
-    } catch (e) {
-      lastErr = asAmoError(e);
-
-      const nonRetry =
-        lastErr.status === 400 ||
-        lastErr.status === 401 ||
-        lastErr.status === 403 ||
-        lastErr.status === 404;
-
-      if (attempt >= retryMax || nonRetry) break;
-
-      await sleep(computeBackoffMs(attempt));
-    }
-  }
-
-  throw lastErr ?? { status: 0, message: "amoRequest failed" };
-}
-
-/* ============================================================
-   PAGINATION HELPER
-============================================================ */
-
-export async function amoFetchAllPages<TItem>(params: {
-  companyId: string;
-  path: string;
-  perPage?: number;
-  maxPages?: number;
-  embeddedKey?: string; // default "items"
-  query?: Record<string, string | number | boolean | undefined>;
-}): Promise<TItem[]> {
-  const perPage = Math.max(10, Math.min(250, params.perPage ?? 50));
-  const maxPages = Math.max(1, Math.min(200, params.maxPages ?? 20));
-  const embeddedKey = params.embeddedKey ?? "items";
-
-  const out: TItem[] = [];
-  for (let page = 1; page <= maxPages; page++) {
-    const json = await amoRequest<any>({
-      companyId: params.companyId,
-      method: "GET",
-      path: params.path,
-      query: { ...(params.query || {}), page, limit: perPage },
-    });
-
-    const items: TItem[] = json?._embedded?.[embeddedKey] ?? [];
-    if (!items.length) break;
-
-    out.push(...items);
-    if (items.length < perPage) break;
-  }
-
-  return out;
-}
-
-/* ============================================================
-   NORMALIZATION (THE IMPORTANT PART)
-   Цель: стабильно получить:
-   - externalId (always)
-   - occurredAt/duration
-   - phone/linePhone
-   - audioUrl (as often as possible)
-   - raw saved
-============================================================ */
-
-function pickFirstString(...vals: any[]): string | undefined {
-  for (const v of vals) {
-    if (typeof v === "string" && v.trim()) return v.trim();
-    if (typeof v === "number" && Number.isFinite(v)) return String(v);
-  }
-  return undefined;
-}
-
-function pickFirstNumber(...vals: any[]): number | undefined {
-  for (const v of vals) {
-    if (typeof v === "number" && Number.isFinite(v)) return v;
-    if (typeof v === "string" && v.trim() && Number.isFinite(Number(v))) return Number(v);
-  }
-  return undefined;
-}
-
-function toDateMaybe(v: any): Date | undefined {
-  if (typeof v === "number") {
-    if (v > 10_000_000_000) return new Date(v); // ms
-    if (v > 1_000_000_000) return new Date(v * 1000); // sec
-    return undefined;
-  }
-  if (typeof v === "string") {
-    const d = new Date(v);
-    if (!Number.isNaN(d.getTime())) return d;
-  }
-  return undefined;
-}
-
-function normalizeDirection(v: any): "inbound" | "outbound" | "unknown" {
-  const s = (v ?? "").toString().trim().toLowerCase();
-  if (["in", "inbound", "incoming", "1"].includes(s)) return "inbound";
-  if (["out", "outbound", "outgoing", "2"].includes(s)) return "outbound";
-  return "unknown";
-}
-
-function looksLikeCallObject(x: any): boolean {
-  if (!x || typeof x !== "object") return false;
-  return Boolean(
-    x.id ||
-      x.uuid ||
-      x.call_id ||
-      x.duration ||
-      x.duration_sec ||
-      x.audio_url ||
-      x.recording_url ||
-      x.from ||
-      x.to ||
-      x.phone ||
-      x.created_at ||
-      x.occurred_at
+function pickAudioUrl(raw: any): string | null {
+  const p = raw?.params ?? {};
+  return (
+    (typeof p?.link === "string" && p.link) ||
+    (typeof p?.url === "string" && p.url) ||
+    (typeof p?.file === "string" && p.file) ||
+    (typeof p?.record_url === "string" && p.record_url) ||
+    (typeof p?.call?.link === "string" && p.call.link) ||
+    (typeof p?.call?.record_url === "string" && p.call.record_url) ||
+    null
   );
 }
 
-function tryGetEmbeddedCall(raw: any): any {
-  const candidates = [
-    raw?.call,
-    raw?.data?.call,
-    raw?._embedded?.call,
-    raw?._embedded?.calls?.[0],
-    raw?.params?.call,
-    raw,
-  ].filter(Boolean);
+export type NormalizedAmoCallDto = {
+  externalId: string;
+  occurredAt: Date | null;
 
-  for (const c of candidates) {
-    if (looksLikeCallObject(c)) return c;
-  }
+  durationSec: number | null;
+  audioUrl: string | null;
 
-  if (looksLikeCallObject(raw?.params)) return raw.params;
-  return raw;
-}
+  direction?: string | null;
+  phone?: string | null;
+  linePhone?: string | null;
 
-function normalizeAudioUrl(obj: any): string | undefined {
-  const direct = pickFirstString(
-    obj?.audio_url,
-    obj?.recording_url,
-    obj?.record_url,
-    obj?.recording?.url,
-    obj?.recording?.link,
-    obj?.record?.url,
-    obj?.record?.link,
-    obj?.link,
-    obj?.url,
+  leadId?: number | null;
+  leadName?: string | null;
+  leadUrl?: string | null;
 
-    // often in params
-    obj?.params?.audio_url,
-    obj?.params?.recording_url,
-    obj?.params?.link
-  );
+  pipelineId?: number | null;
+  pipelineName?: string | null;
 
-  const fromLinks =
-    Array.isArray(obj?.links)
-      ? pickFirstString(
-          obj.links.find((x: any) => x?.type === "recording")?.href,
-          obj.links[0]?.href
-        )
-      : undefined;
+  stageId?: number | null;
+  stageName?: string | null;
 
-  const fromUnderscoreLinks = pickFirstString(obj?._links?.recording?.href, obj?._links?.self?.href);
+  amountKzt?: number | null;
 
-  const fromAttachments =
-    Array.isArray(obj?.attachments)
-      ? pickFirstString(
-          obj.attachments.find((a: any) => a?.type === "recording")?.url,
-          obj.attachments[0]?.url
-        )
-      : undefined;
+  raw: any;
+};
 
-  const out = direct || fromLinks || fromUnderscoreLinks || fromAttachments;
-  if (!out) return undefined;
+export function normalizeAmoCall(input: any): NormalizedAmoCallDto | null {
+  if (!input || typeof input !== "object") return null;
 
-  try {
-    const u = new URL(out);
-    if (u.protocol === "http:" || u.protocol === "https:") return out;
-  } catch {}
-  return undefined;
-}
+  const externalId =
+    typeof input?.id === "number" || typeof input?.id === "string"
+      ? String(input.id)
+      : typeof input?.uuid === "string"
+        ? input.uuid
+        : typeof input?.call_id === "string"
+          ? input.call_id
+          : typeof input?.unique_id === "string"
+            ? input.unique_id
+            : "";
 
-function makeExternalId(raw: any, obj: any, occurredAt?: Date, phone?: string, durationSec?: number): string | undefined {
-  const base =
-    pickFirstString(obj?.id, obj?.uuid, obj?.call_id, raw?.id, raw?.uuid, raw?.call_id) ||
-    pickFirstString(raw?.note?.id, raw?.note_id, raw?.element_id);
-
-  if (base) return String(base);
-
-  const ts = occurredAt ? occurredAt.toISOString() : "";
-  const ph = phone ? String(phone) : "";
-  const dur = Number.isFinite(Number(durationSec)) ? String(durationSec) : "";
-  const composed = [ts, ph, dur].filter(Boolean).join("|");
-  if (!composed) return undefined;
-
-  return crypto.createHash("sha1").update(composed).digest("hex");
-}
-
-export function normalizeAmoCall(raw: any): AmoCallDTO | null {
-  const obj = tryGetEmbeddedCall(raw);
-
-  const occurredAt =
-    toDateMaybe(obj?.occurred_at) ||
-    toDateMaybe(obj?.created_at) ||
-    toDateMaybe(obj?.date) ||
-    toDateMaybe(obj?.timestamp) ||
-    toDateMaybe(raw?.occurred_at) ||
-    toDateMaybe(raw?.created_at) ||
-    toDateMaybe(raw?.date);
-
-  const durationSec =
-    pickFirstNumber(obj?.duration, obj?.duration_sec, obj?.durationSeconds, obj?.talk_time, raw?.duration, raw?.duration_sec) ??
-    undefined;
-
-  const direction = normalizeDirection(obj?.direction ?? obj?.dir ?? obj?.call_direction ?? raw?.direction);
-
-  const phone = pickFirstString(
-    obj?.phone,
-    obj?.client_phone,
-    obj?.contact_phone,
-    obj?.from,
-    obj?.src,
-    obj?.source,
-    obj?.caller,
-    obj?.caller_phone,
-    obj?.phone_from,
-    raw?.phone,
-    raw?.from
-  );
-
-  const linePhone = pickFirstString(
-    obj?.line_phone,
-    obj?.to,
-    obj?.dst,
-    obj?.destination,
-    obj?.callee,
-    obj?.callee_phone,
-    obj?.phone_to,
-    raw?.to
-  );
-
-  const externalId = makeExternalId(raw, obj, occurredAt, phone, durationSec);
   if (!externalId) return null;
 
-  const audioUrl = normalizeAudioUrl(obj) || normalizeAudioUrl(raw);
+  const occurredAt =
+    toDateFromUnixSeconds(input?.occurred_at) ||
+    toDateFromUnixSeconds(input?.created_at) ||
+    (typeof input?.date === "string" ? new Date(input.date) : null);
 
-  const leadId = pickFirstString(obj?.lead_id, obj?.leadId, obj?.entity_id, obj?.element_id, raw?.lead_id);
-  const leadName = pickFirstString(obj?.lead_name, obj?.leadName);
-  const leadUrl = pickFirstString(obj?.lead_url, obj?.leadUrl);
+  const durationSec =
+    toNumber(input?.duration) ??
+    toNumber(input?.duration_sec) ??
+    toNumber(input?.params?.duration) ??
+    toNumber(input?.params?.call?.duration) ??
+    null;
 
-  const pipelineId = pickFirstString(obj?.pipeline_id, obj?.pipelineId);
-  const pipelineName = pickFirstString(obj?.pipeline_name, obj?.pipelineName);
+  const audioUrl =
+    pickAudioUrl(input) ||
+    (typeof input?.recording_url === "string" ? input.recording_url : null) ||
+    (typeof input?.record_url === "string" ? input.record_url : null) ||
+    null;
 
-  const stageId = pickFirstString(obj?.stage_id, obj?.stageId, obj?.status_id);
-  const stageName = pickFirstString(obj?.stage_name, obj?.stageName, obj?.status_name);
+  const phone =
+    (typeof input?.phone === "string" && input.phone) ||
+    (typeof input?.params?.phone === "string" && input.params.phone) ||
+    (typeof input?.params?.call?.phone === "string" && input.params.call.phone) ||
+    null;
 
-  const amountKzt = pickFirstNumber(obj?.amount, obj?.price, obj?.sum, obj?.budget);
+  const direction =
+    (typeof input?.direction === "string" ? input.direction : null) ||
+    (typeof input?.params?.direction === "string" ? input.params.direction : null) ||
+    null;
+
+  const leadId =
+    toNumber(input?.entity_id) ??
+    toNumber(input?.lead_id) ??
+    toNumber(input?.params?.entity_id) ??
+    toNumber(input?.params?.lead_id) ??
+    null;
+
+  return {
+    externalId,
+    occurredAt: occurredAt && Number.isFinite(occurredAt.getTime()) ? occurredAt : null,
+    durationSec,
+    audioUrl,
+    direction,
+    phone,
+    leadId,
+    raw: input,
+  };
+}
+
+/* ============================================================
+   normalizeAmoEventCall — converts /api/v4/events items into unified dto
+============================================================ */
+
+function deepFindValue(
+  obj: any,
+  predicate: (key: string, value: any) => boolean,
+  maxDepth = 5,
+  _depth = 0
+): any | undefined {
+  if (!obj || typeof obj !== "object") return undefined;
+  if (_depth > maxDepth) return undefined;
+
+  if (Array.isArray(obj)) {
+    for (const v of obj) {
+      const r = deepFindValue(v, predicate, maxDepth, _depth + 1);
+      if (r !== undefined) return r;
+    }
+    return undefined;
+  }
+
+  for (const [k, v] of Object.entries(obj)) {
+    try {
+      if (predicate(k, v)) return v;
+      const r = deepFindValue(v, predicate, maxDepth, _depth + 1);
+      if (r !== undefined) return r;
+    } catch {
+      // ignore traversal errors
+    }
+  }
+  return undefined;
+}
+
+function pickFirstString(raw: any, keys: string[]): string | null {
+  for (const k of keys) {
+    const v = raw?.[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return null;
+}
+
+function safeUnixToDate(v: any): Date | null {
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return null;
+  const ms = n > 10_000_000_000 ? n : n * 1000;
+  const d = new Date(ms);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+export type NormalizedAmoEventCallDto = {
+  externalId: string;
+  occurredAt: Date | null;
+
+  durationSec?: number | null;
+  direction?: "inbound" | "outbound" | "unknown" | null;
+
+  phone?: string | null;
+  linePhone?: string | null;
+  audioUrl?: string | null;
+
+  amoUserId?: number | null;
+
+  leadId?: string | number | null;
+  leadName?: string | null;
+  leadUrl?: string | null;
+
+  raw: any;
+};
+
+export function normalizeAmoEventCall(event: any): NormalizedAmoEventCallDto | null {
+  if (!event || typeof event !== "object") return null;
+
+  const externalId =
+    typeof event?.id === "number" || typeof event?.id === "string"
+      ? String(event.id)
+      : typeof event?.uuid === "string"
+        ? event.uuid
+        : "";
+
+  if (!externalId) return null;
+
+  const occurredAt =
+    safeUnixToDate(event?.created_at) ||
+    safeUnixToDate(event?.occurred_at) ||
+    safeUnixToDate(event?.updated_at) ||
+    null;
+
+  const eventType = Number(event?.event_type ?? event?.type ?? NaN);
+  const direction: "outbound" | "unknown" | null =
+    Number.isFinite(eventType) && eventType === 30 ? "outbound" : "unknown";
+
+  const data = event?.value_after ?? event?.value_before ?? event?.data ?? event?.params ?? event?.entity_data ?? {};
+
+  const audioUrl =
+    pickFirstString(data, ["record_url", "recordUrl", "record", "recording_url", "audio_url", "url", "link"]) ||
+    pickFirstString(event, ["record_url", "recordUrl", "record", "recording_url", "audio_url", "url", "link"]) ||
+    ((deepFindValue(event, (k, v) => {
+      const kk = String(k).toLowerCase();
+      return (
+        ["record_url", "recordurl", "recording_url", "recordingurl", "audio_url", "audiourl", "record", "link", "url"].includes(kk) &&
+        typeof v === "string" &&
+        v.trim()
+      );
+    }) as string | undefined)?.trim?.() ?? null);
+
+  const durationRaw =
+    data?.duration ?? data?.duration_sec ?? data?.call_duration ?? data?.call_duration_sec ??
+    (deepFindValue(event, (k, v) => {
+      const kk = String(k).toLowerCase();
+      return (
+        ["duration", "duration_sec", "call_duration", "call_duration_sec"].includes(kk) &&
+        (typeof v === "number" || (typeof v === "string" && v.trim()))
+      );
+    }) as any);
+
+  const durationNum =
+    typeof durationRaw === "number" ? durationRaw :
+    typeof durationRaw === "string" ? Number(durationRaw) :
+    null;
+
+  const phone =
+    pickFirstString(data, ["phone", "caller", "callee", "client_phone", "from", "to", "number"]) ||
+    pickFirstString(event, ["phone"]) ||
+    ((deepFindValue(event, (k, v) => {
+      const kk = String(k).toLowerCase();
+      return (
+        ["phone", "caller", "callee", "client_phone", "from", "to", "number"].includes(kk) &&
+        typeof v === "string" &&
+        v.trim()
+      );
+    }) as string | undefined)?.trim?.() ?? null);
+
+  const linePhone =
+    pickFirstString(data, ["line_phone", "linePhone", "sip", "pbx_number", "pbxnumber"]) ||
+    ((deepFindValue(event, (k, v) => {
+      const kk = String(k).toLowerCase();
+      return (
+        ["line_phone", "linephone", "sip", "pbx_number", "pbxnumber"].includes(kk) &&
+        typeof v === "string" &&
+        v.trim()
+      );
+    }) as string | undefined)?.trim?.() ?? null);
+
+  const amoUserIdRaw =
+    event?.created_by ??
+    event?.created_by_id ??
+    event?.created_by_user_id ??
+    data?.created_by ??
+    data?.created_by_id ??
+    data?.user_id ??
+    data?.responsible_user_id ??
+    (deepFindValue(event, (k, v) => {
+      const kk = String(k).toLowerCase();
+      return (
+        ["created_by", "created_by_id", "user_id", "manager_id", "responsible_user_id"].includes(kk) &&
+        (typeof v === "number" || (typeof v === "string" && v.trim()))
+      );
+    }) as any);
+
+  const amoUserId =
+    typeof amoUserIdRaw === "number" ? amoUserIdRaw :
+    typeof amoUserIdRaw === "string" && amoUserIdRaw.trim() ? Number(amoUserIdRaw) :
+    null;
+
+  const leadId =
+    event?.entity_id ??
+    data?.lead_id ??
+    data?.entity_id ??
+    (deepFindValue(event, (k, v) => {
+      const kk = String(k).toLowerCase();
+      return ["lead_id", "entity_id", "leadid"].includes(kk) && (typeof v === "number" || typeof v === "string");
+    }) as any) ??
+    null;
 
   return {
     externalId,
     occurredAt,
-    durationSec,
+    durationSec: Number.isFinite(durationNum as any) ? Number(durationNum) : null,
     direction,
     phone,
     linePhone,
     audioUrl,
+    amoUserId: Number.isFinite(amoUserId as any) ? amoUserId : null,
     leadId,
-    leadName,
-    leadUrl,
-    pipelineId,
-    pipelineName,
-    stageId,
-    stageName,
-    amountKzt,
-    raw,
-  };
-}
-
-/* ============================================================
-   OPTIONAL: refresh all tokens (cron)
-============================================================ */
-
-export async function refreshAllAmoTokens(params?: {
-  take?: number;
-  onlyExpired?: boolean;
-}): Promise<{
-  ok: boolean;
-  total: number;
-  refreshed: number;
-  skipped: number;
-  failed: number;
-  errors: Array<{ companyId: string; error: string }>;
-}> {
-  const take = Math.max(1, Math.min(2000, params?.take ?? 500));
-  const onlyExpired = params?.onlyExpired ?? true;
-
-  const integrations = await db.integration.findMany({
-    where: { type: IntegrationType.AMOCRM, enabled: true },
-    take,
-    select: { companyId: true, config: true, updatedAt: true },
-    orderBy: { updatedAt: "desc" },
-  });
-
-  let refreshed = 0;
-  let skipped = 0;
-  const errors: Array<{ companyId: string; error: string }> = [];
-
-  for (const it of integrations) {
-    try {
-      const cfg = readAmoConfig(it.config);
-      if (!cfg.tokens) {
-        skipped += 1;
-        continue;
-      }
-
-      if (onlyExpired) {
-        const tokens = maybeDecryptTokens(cfg.tokens);
-        if (!tokenExpired(tokens)) {
-          skipped += 1;
-          continue;
-        }
-      }
-
-      await refreshAmoTokens(it.companyId);
-      refreshed += 1;
-    } catch (e: any) {
-      errors.push({ companyId: it.companyId, error: e?.message ?? String(e ?? "Unknown error") });
-    }
-  }
-
-  return {
-    ok: errors.length === 0,
-    total: integrations.length,
-    refreshed,
-    skipped,
-    failed: errors.length,
-    errors,
-  };
-}
-
-/* ============================================================
-   HARDENING: redact config in logs
-============================================================ */
-
-export function redactAmoConfigForLogs(cfg: AmoConfig): Record<string, any> {
-  return {
-    domain: cfg.domain,
-    accountId: cfg.accountId,
-    hasTokens: !!cfg.tokens,
-    tokensEncrypted: !!(cfg.tokens as any)?.enc,
-    expiresAtMs: (cfg.tokens as any)?.expiresAtMs,
+    leadName: null,
+    leadUrl: null,
+    raw: event,
   };
 }

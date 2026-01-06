@@ -62,14 +62,14 @@ export const authOptions: NextAuthOptions = {
       }
       return token;
     },
-    async session({ session, token }) {
-      // На каждом запросе прокидываем companyId и role в session.user
-      if (session.user) {
-        (session.user as any).companyId = (token as any).companyId;
-        (session.user as any).role = (token as any).role;
-      }
-      return session;
-    },
+async session({ session, token }) {
+  if (session.user) {
+    (session.user as any).id = (token as any).sub; // <-- важно
+    (session.user as any).companyId = (token as any).companyId;
+    (session.user as any).role = (token as any).role;
+  }
+  return session;
+}
   },
 };
 

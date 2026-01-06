@@ -25,7 +25,10 @@ enum IntegrationType {
   AMOCRM
   BITRIX24
   WEBHOOK
+  SIPUNI
 }
+
+
 
 enum SubscriptionStatus {
   ACTIVE
@@ -210,6 +213,7 @@ model Call {
   // новые связи
   callScore      CallScore?
   callTranscript CallTranscript?
+@@index([companyId, occurredAt])
 
   @@unique([companyId, externalId])
   @@index([companyId])
@@ -333,4 +337,12 @@ model CallTask {
   @@index([status, nextRunAt])
   @@index([lockedAt])
   @@index([status, createdAt])
+}
+
+model CronLock {
+  key       String   @id
+  lockedAt  DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([expiresAt])
 }

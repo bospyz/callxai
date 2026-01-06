@@ -16,6 +16,12 @@ async function acquireCronLock(key: string, ttlMs: number) {
   const now = new Date();
   const expiresAt = new Date(now.getTime() + ttlMs);
 
+
+  const okLock = await acquireCronLock("process-calls", 5 * 60 * 1000);
+  if (!okLock) {
+    return NextResponse.json({ ok: true, skipped: true, reason: "lock-busy" });
+  }
+
   try {
     await db.cronLock.create({ data: { key, expiresAt } });
     return true;
@@ -65,12 +71,6 @@ export async function GET(req: NextRequest) {
 
   // Сколько NEW calls (без задач) можно подстраховочно энкьюить
   const seedLimit = clampInt(searchParams.get("seed") ?? "20", 0, 50);
-
-
-  const okLock = await acquireCronLock("process-calls", 5 * 60 * 1000);
-  if (!okLock) {
-    return NextResponse.json({ ok: true, skipped: true, reason: "lock-busy" });
-  }
 
   try {
     // 0) Best-effort seed: если есть NEW calls, но нет задач — создадим задачи (idempotent)
@@ -124,6 +124,15 @@ export async function GET(req: NextRequest) {
 
         await markTaskDone(t.id);
 
+        // best-effort: call -> DONE (если processCall не выставил)
+        try {
+          await db.call.update({
+            where: { id: t.callId },
+            data: { status: CallStatus.DONE },
+          });
+        } catch {
+          // ignore
+        }
 
         processed += 1;
       } catch (e: unknown) {
@@ -152,7 +161,6 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    await releaseCronLock("process-calls");
     return NextResponse.json({
       ok: true,
       seed: { enqueuedFromNewCalls: seeded, seedLimit },
@@ -168,11 +176,13 @@ export async function GET(req: NextRequest) {
     console.error("[cron/process-calls] failed", e);
     const msg = getErrorMessage(e);
 
-    await releaseCronLock("process-calls");
     return NextResponse.json(
       { ok: false, message: "Cron failed", error: msg },
       { status: 503 }
     );
+  }
+  } finally {
+    await releaseCronLock("process-calls");
   }
 }
 

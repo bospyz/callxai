@@ -168,7 +168,6 @@ export async function GET(req: NextRequest) {
     console.error("[cron/process-calls] failed", e);
     const msg = getErrorMessage(e);
 
-    await releaseCronLock("process-calls");
     return NextResponse.json(
       { ok: false, message: "Cron failed", error: msg },
       { status: 503 }

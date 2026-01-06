@@ -1,0 +1,7 @@
+﻿/**
+ * Disabled legacy worker.
+ * Reason: project uses src/lib/workers/* DB-backed runner + cron endpoint.
+ * This file is intentionally blocked to avoid double-processing / race conditions.
+ */
+console.error("[CallXAI] worker/worker.ts is disabled. Use /api/cron/process-calls + src/lib/workers/task-runner.ts");
+process.exit(1);

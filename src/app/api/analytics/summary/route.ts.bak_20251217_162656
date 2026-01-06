@@ -17,7 +17,7 @@ function dateFromDays(days: number) {
 
 export async function GET(req: NextRequest) {
   try {
-    const auth = await requireAuthWithCompany();
+    const auth = await requireAuthWithCompany(req);
     const companyId = auth.companyId;
 
     const { searchParams } = new URL(req.url);

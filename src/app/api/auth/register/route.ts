@@ -1,8 +1,11 @@
 ﻿import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { z } from "zod";
 import bcrypt from "bcrypt";
+import { z } from "zod";
 import { Role } from "@prisma/client";
+
+import { db } from "@/lib/db";
+import { apiError } from "@/lib/api-error";
+import { HttpError } from "@/lib/http-error";
 
 const schema = z.object({
   name: z.string().min(1),
@@ -19,53 +22,64 @@ export async function POST(req: Request) {
 
     const existing = await db.user.findUnique({
       where: { email: body.email },
+      select: { id: true },
     });
 
     if (existing) {
+      throw new HttpError(400, "Пользователь с таким email уже существует");
+    }
+
+    const passwordHash = await bcrypt.hash(body.password, 10);
+
+    // Важно: транзакция, чтобы не остались “висячие” company/subscription при сбое
+    const result = await db.$transaction(async (tx) => {
+      const company = await tx.company.create({
+        data: {
+          name: body.companyName,
+          phone: body.phone,
+        },
+        select: { id: true },
+      });
+
+      const user = await tx.user.create({
+        data: {
+          email: body.email,
+          name: body.name,
+          passwordHash,
+          role: Role.OWNER,
+          companyId: company.id,
+        },
+        select: { id: true },
+      });
+
+      // Если у тебя в Prisma plan/status — enum’ы, оставь как есть.
+      await tx.subscription.create({
+        data: {
+          companyId: company.id,
+          plan: "FREE",
+          seats: 5,
+          pricePerMonthKZT: 0,
+          status: "ACTIVE",
+        },
+        select: { id: true },
+      });
+
+      return { companyId: company.id, userId: user.id };
+    });
+
+    return NextResponse.json(
+      { ok: true, userId: result.userId, companyId: result.companyId },
+      { status: 201 }
+    );
+  } catch (e: any) {
+    // zod -> 400 с деталями
+    if (e?.name === "ZodError") {
       return NextResponse.json(
-        { error: "Пользователь с таким email уже существует" },
+        { ok: false, error: "Некорректные данные", details: e.errors },
         { status: 400 }
       );
     }
 
-    const company = await db.company.create({
-      data: {
-        name: body.companyName,
-        phone: body.phone,
-      },
-    });
-
-    const passwordHash = await bcrypt.hash(body.password, 10);
-
-    const user = await db.user.create({
-      data: {
-        email: body.email,
-        name: body.name,
-        passwordHash,
-        role: Role.OWNER,
-        companyId: company.id,
-      },
-    });
-
-    await db.subscription.create({
-      data: {
-        companyId: company.id,
-        plan: "FREE",
-        seats: 5,
-        pricePerMonthKZT: 0,
-        status: "ACTIVE",
-      },
-    });
-
-    return NextResponse.json({ success: true, userId: user.id }, { status: 201 });
-  } catch (e) {
-    console.error(e);
-    return NextResponse.json(
-      { error: "Ошибка регистрации" },
-      { status: 500 }
-    );
+    return apiError(e);
   }
 }
-
-
-

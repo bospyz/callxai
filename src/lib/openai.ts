@@ -1,35 +1,45 @@
-﻿import OpenAI from "openai";
+﻿// src/lib/openai.ts
+import OpenAI from "openai";
 
-const OPENAI_TIMEOUT_MS = 25000;
+const OPENAI_TIMEOUT_MS = 25_000;
 const OPENAI_MAX_RETRIES = 2;
 
-
-let client: OpenAI | null = null;
-
 /**
- * Safe OpenAI client.
- * - В production без ключа падаем с ошибкой
- * - В dev можем использовать dummy-ключ, чтобы не ломать билд
+ * Важно: на Vercel (serverless) модули могут пересоздаваться.
+ * В dev/hmr — тоже. Поэтому кэшируем client в globalThis.
  */
-export function getOpenAIClient(): OpenAI {
-  if (!client) {
-    const apiKey = process.env.OPENAI_API_KEY;
+const globalForOpenAI = globalThis as unknown as {
+  __openaiClient?: OpenAI;
+};
 
-    if (!apiKey) {
-      if (process.env.NODE_ENV === "production") {
-        throw new Error(
-          "OPENAI_API_KEY is not set. Cannot start in production without it."
-        );
-      }
-      console.warn(
-        "[openai] OPENAI_API_KEY is not set. Using dummy key in non-production."
-      );
-      client = new OpenAI({ apiKey: "dummy-openai-key", timeout: OPENAI_TIMEOUT_MS, maxRetries: OPENAI_MAX_RETRIES });
-    } else {
-      client = new OpenAI({ apiKey, timeout: OPENAI_TIMEOUT_MS, maxRetries: OPENAI_MAX_RETRIES });
+function createClient(): OpenAI {
+  const apiKey = process.env.OPENAI_API_KEY;
+
+  // В production отсутствие ключа — фатально.
+  if (!apiKey) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("OPENAI_API_KEY is not set. Production cannot run without it.");
     }
+
+    // В dev можно жить без ключа, но НЕ создаём dummy client,
+    // чтобы не было “как будто работает”. Пусть падает при вызове STT/LLM.
+    throw new Error("OPENAI_API_KEY is not set (dev). Configure it to enable STT/LLM.");
   }
-  return client;
+
+  return new OpenAI({
+    apiKey,
+    timeout: OPENAI_TIMEOUT_MS,
+    maxRetries: OPENAI_MAX_RETRIES,
+  });
 }
 
-
+/**
+ * Единственная точка получения OpenAI клиента.
+ * Если ключа нет — бросает понятную ошибку.
+ */
+export function getOpenAIClient(): OpenAI {
+  if (!globalForOpenAI.__openaiClient) {
+    globalForOpenAI.__openaiClient = createClient();
+  }
+  return globalForOpenAI.__openaiClient;
+}
